@@ -1,0 +1,150 @@
+#!/bin/bash
+# Claude Code statusline: model, context use, tokens — and cost, but only where
+# cost is a real number.
+#
+#   [Opus 4.5] 42% context | in:120.4k out:8.1k
+#   [bedrock-claude-opus-4-5] 42% context | in:120.4k out:8.1k | total: $1.23 | turn: +$0.0456
+#   [deepseek-v4-pro[1m]] 42% context | in:1.0M out:1.0M | total: $2.64 | turn: +$0.66
+#
+# Why cost is conditional: on a claude.ai subscription the dollar figure is an
+# estimate of what the tokens *would* have cost on the API. Nobody is billed it,
+# so showing it every turn trains you to react to a number that is not real.
+# On Bedrock and on DeepSeek you are billed per token, so the number means
+# something and the statusline is the right place for it.
+#
+# DeepSeek cost is computed from the token totals against the public rate
+# card: peak is 2x off-peak, Beijing peak hours 09-12 and 14-18. The table
+# and its caveats live in SKILL.md.
+#
+# Detection is deliberately narrow -- priced model ids only (Bedrock, DeepSeek
+# v4), or CLAUDE_CODE_USE_BEDROCK set. Anything unrecognised gets no cost,
+# because a false positive here is the failure worth avoiding.
+#
+# Install: see the plugin README, or run /statusline.
+#
+# Configuration, all optional:
+#   CLAUDE_STATUSLINE_CURRENCY   currency symbol to print         (default "$")
+#   CLAUDE_STATUSLINE_FX_RATE    multiplier applied to USD        (default 1)
+#   CLAUDE_STATUSLINE_COST       "auto" (default) | "always" | "never"
+#   CLAUDE_STATUSLINE_DEEPSEEK_RATE  "auto" (default) | "peak" | "offpeak"
+#
+# For example, to bill yourself in another currency:
+#   export CLAUDE_STATUSLINE_CURRENCY='SGD '
+#   export CLAUDE_STATUSLINE_FX_RATE=1.27
+#
+# Requires: jq. Arithmetic uses awk, so bc is not needed.
+
+set -u
+export LC_ALL=C
+
+input=$(cat)
+
+jqr() { printf '%s' "$input" | jq -r "$1" 2>/dev/null; }
+
+MODEL=$(jqr '.model.display_name // "Claude"')
+MODEL_ID=$(jqr '.model.id // ""')
+USED=$(jqr '.context_window.used_percentage // 0')
+IN=$(jqr '.context_window.total_input_tokens // 0')
+OUT=$(jqr '.context_window.total_output_tokens // 0')
+COST_USD=$(jqr '.cost.total_cost_usd // 0')
+SESSION_ID=$(jqr '.session_id // "default"')
+TRANSCRIPT=$(jqr '.transcript_path // empty')
+
+# jq yields nothing at all on empty or non-JSON stdin, so // defaults never fire.
+: "${MODEL:=Claude}" "${USED:=0}" "${IN:=0}" "${OUT:=0}" "${COST_USD:=0}" "${SESSION_ID:=default}"
+
+CURRENCY=${CLAUDE_STATUSLINE_CURRENCY:-$}
+FX=${CLAUDE_STATUSLINE_FX_RATE:-1}
+# A comma decimal would parse as 1 under LC_ALL=C.
+FX=$(printf '%s' "$FX" | tr ',' '.')
+COST_MODE=${CLAUDE_STATUSLINE_COST:-auto}
+DEEPSEEK_RATE=${CLAUDE_STATUSLINE_DEEPSEEK_RATE:-auto}
+
+lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
+
+# --- should cost be shown? ---------------------------------------------------
+show_cost=0
+case "$COST_MODE" in
+  always) show_cost=1 ;;
+  never)  show_cost=0 ;;
+  *)
+    case "$(lower "$MODEL_ID")" in bedrock*|deepseek-v4-flash*|deepseek-v4-pro*) show_cost=1 ;; esac
+    case "$(lower "$MODEL")"    in bedrock*) show_cost=1 ;; esac
+    case "${CLAUDE_CODE_USE_BEDROCK:-}" in 1|true|TRUE|True) show_cost=1 ;; esac
+    ;;
+esac
+
+# --- humanise token counts ---------------------------------------------------
+human() {
+  awk -v n="${1:-0}" 'BEGIN{
+    if (n+0 >= 1000000) printf "%.1fM", n/1000000;
+    else if (n+0 >= 1000) printf "%.1fk", n/1000;
+    else printf "%d", n;
+  }'
+}
+
+BASE=$(printf '[%s] %.0f%% context | in:%s out:%s' \
+  "$MODEL" "${USED:-0}" "$(human "$IN")" "$(human "$OUT")" 2>/dev/null) \
+  || BASE="[$MODEL] ${USED}% context | in:$IN out:$OUT"
+
+if [ "$show_cost" -eq 0 ]; then
+  printf '%s\n' "$BASE"
+  exit 0
+fi
+
+# --- DeepSeek cost, priced off the public rate card (table: SKILL.md) -------
+# Cache hits are not broken out of the totals, so input is priced at the
+# cache-miss rate: an upper bound. Unpriced ids get zero, never Claude
+# Code's Anthropic-priced estimate.
+case "$(lower "$MODEL_ID")" in deepseek*) COST_USD=0 ;; esac
+case "$(lower "$MODEL")"    in deepseek*) COST_USD=0 ;; esac
+
+DEEPSEEK_IN=; DEEPSEEK_OUT=
+case "$(lower "$MODEL_ID")" in
+  deepseek-v4-pro*)   DEEPSEEK_IN=0.66  DEEPSEEK_OUT=1.98 ;;
+  deepseek-v4-flash*) DEEPSEEK_IN=0.22  DEEPSEEK_OUT=0.66 ;;
+esac
+
+if [ -n "$DEEPSEEK_IN" ]; then
+  # Beijing time (UTC+8); peak windows [9,12) and [14,18). A bad rate falls
+  # back to auto, a broken date to off-peak -- neither may fail the render.
+  PEAK=0
+  case "$DEEPSEEK_RATE" in
+    peak)    PEAK=1 ;;
+    offpeak) PEAK=0 ;;
+    *)       PEAK=$(date -u +%H 2>/dev/null | awk '{h=($1+8)%24; print ((h>=9&&h<12)||(h>=14&&h<18))?"1":"0"}') ;;
+  esac
+  COST_USD=$(awk -v i="$IN" -v o="$OUT" -v pi="$DEEPSEEK_IN" -v po="$DEEPSEEK_OUT" -v p="$PEAK" \
+    'BEGIN{printf "%.10f", (i/1000000*pi + o/1000000*po) * (p=="1" ? 2 : 1)}')
+fi
+
+# --- per-turn delta, measured at real turn boundaries ------------------------
+# The statusline is re-rendered many times within a single turn, so the delta is
+# pinned to the human-message count in the transcript. Without that anchor,
+# "last turn" would reset on every redraw and always read close to zero.
+STATE_FILE="${TMPDIR:-/tmp}/claude_statusline_${SESSION_ID}"
+
+PROMPT_COUNT=0
+if [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ]; then
+  PROMPT_COUNT=$(jq -s '[.[] | select(.type == "user" or .message.role == "user")] | length' \
+    "$TRANSCRIPT" 2>/dev/null) || PROMPT_COUNT=0
+  [ -z "$PROMPT_COUNT" ] && PROMPT_COUNT=0
+fi
+
+LAST_PROMPT_COUNT=0; LAST_BASELINE_COST=0; LAST_DELTA=0
+if [ -f "$STATE_FILE" ]; then
+  read -r LAST_PROMPT_COUNT LAST_BASELINE_COST LAST_DELTA < "$STATE_FILE" 2>/dev/null || true
+  : "${LAST_PROMPT_COUNT:=0}" "${LAST_BASELINE_COST:=0}" "${LAST_DELTA:=0}"
+fi
+
+if [ "$PROMPT_COUNT" -gt "$LAST_PROMPT_COUNT" ] 2>/dev/null; then
+  LAST_DELTA=$(awk -v a="$COST_USD" -v b="$LAST_BASELINE_COST" 'BEGIN{printf "%.10f", a-b}')
+  LAST_BASELINE_COST=$COST_USD
+  LAST_PROMPT_COUNT=$PROMPT_COUNT
+  printf '%s %s %s\n' "$LAST_PROMPT_COUNT" "$LAST_BASELINE_COST" "$LAST_DELTA" > "$STATE_FILE"
+fi
+
+TOTAL=$(awk -v c="$COST_USD"  -v r="$FX" 'BEGIN{printf "%.2f", c*r}')
+DELTA=$(awk -v d="$LAST_DELTA" -v r="$FX" 'BEGIN{printf "%.4f", d*r}')
+
+printf '%s | total: %s%s | turn: +%s%s\n' "$BASE" "$CURRENCY" "$TOTAL" "$CURRENCY" "$DELTA"

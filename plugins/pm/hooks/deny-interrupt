@@ -1,0 +1,86 @@
+#!/bin/sh
+# PreToolUse guard: refuse AskUserQuestion unless THIS SESSION has an interview
+# window open.
+#
+# Prose rules did not hold. An agent mid-change, unsure, reaches for the tool
+# that is right there. This makes that call fail with a message telling it what
+# to do instead, which is the only version that binds.
+#
+# The interview exception is a self-expiring window rather than a flag, because
+# a flag that must be turned off is a flag left on. `interview-window open`
+# stamps a file; this allows the call only while that file is fresh. Forget to
+# close it and it closes itself.
+#
+# The window is keyed on the session id read from the JSON on stdin. It used to
+# be a single file per user, which meant one agent opening an interview granted
+# every other agent on the machine permission to interrupt -- and its `close`
+# revoked a window another agent was relying on. Two agents pursuing two
+# different north stars is the ordinary case.
+#
+# Escape hatch: CLAUDE_ALLOW_INTERRUPT=1 for the case nobody predicted. Set it
+# deliberately, per command -- not exported in a shell profile, which would
+# disable the guard permanently and silently.
+
+WINDOW_DIR=${CLAUDE_INTERVIEW_WINDOW_DIR:-$HOME/.claude/interview-windows}
+MAX_AGE_MIN=${CLAUDE_INTERVIEW_WINDOW_MINUTES:-30}
+
+case "${CLAUDE_ALLOW_INTERRUPT:-}" in 1|true) exit 0 ;; esac
+
+# PreToolUse delivers its context as JSON on stdin. jq if it is here, a narrow
+# sed if not -- a guard that silently stops guarding because jq is missing is
+# the worst of both.
+INPUT=$(cat 2>/dev/null || true)
+SID=""
+if [ -n "$INPUT" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    SID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
+  fi
+  [ -z "$SID" ] && SID=$(printf '%s' "$INPUT" \
+    | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+fi
+
+# Fail closed. Without a session id there is no way to tell whose window an open
+# one belongs to, and treating "cannot tell" as "allowed" is exactly the bug
+# that per-session scoping exists to fix.
+if [ -n "$SID" ]; then
+  WINDOW="$WINDOW_DIR/$SID"
+  if [ -f "$WINDOW" ]; then
+    # find -mmin avoids stat's incompatible flags across GNU and BSD, which is
+    # exactly the sort of thing that breaks on one laptop and not the next.
+    if [ -n "$(find "$WINDOW" -mmin "-$MAX_AGE_MIN" 2>/dev/null)" ]; then
+      exit 0
+    fi
+    rm -f "$WINDOW"   # stale; clean up so it cannot be mistaken for open
+  fi
+fi
+
+cat >&2 <<'MSG'
+Blocked: no interruptions once work has started.
+
+AskUserQuestion stops the turn with no timeout, needs someone present at that
+exact moment, and loses the question entirely if the session ends first.
+
+Use ask-async instead. Same shape, returns immediately:
+
+  ask-async "your question" \
+    --context "what you were doing and why this came up" \
+    --option "Label|why this one" \
+    --option "Other|why that one" \
+    --assume "what you are doing meanwhile"
+
+Then carry on with the stated assumption. The human ticks a box when they get to
+it and nothing is blocked on them.
+
+If you cannot name an assumption, you are not asking a question -- you are
+stopping. File that and stop, citing the number:
+
+  file-issue question "..." --body "blocked because ..., tried ..., unblocks if ..."
+
+Both commands write the question to disk BEFORE trying GitHub, so a missing gh
+or a dead network cannot lose it. Exit 3 means exactly that: recorded locally,
+not filed yet. Carry on with your assumption and run `questions sync` later.
+
+If the user did start an interview with you, open this session's own window
+first: interview-window open
+MSG
+exit 2

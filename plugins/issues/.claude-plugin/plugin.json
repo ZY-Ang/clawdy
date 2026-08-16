@@ -1,0 +1,11 @@
+{
+  "name": "issues",
+  "description": "Deprecated — merged into `pm`, which now carries filing, asking and the queue that orders what comes back. Install `pm` and uninstall this; the commands no longer ship here.",
+  "version": "0.2.0",
+  "author": {
+    "name": "ZY-Ang"
+  },
+  "homepage": "https://github.com/ZY-Ang/clawdy/tree/main/plugins/issues",
+  "repository": "https://github.com/ZY-Ang/clawdy",
+  "license": "MIT"
+}

@@ -1,0 +1,11 @@
+{
+  "name": "handoff",
+  "description": "Write a handoff document that lets a fresh session resume work without re-discovering context. Six sections, skim-readable in thirty seconds, with failed attempts recorded so nobody walks the same dead end twice.",
+  "version": "0.1.0",
+  "author": {
+    "name": "ZY-Ang"
+  },
+  "homepage": "https://github.com/ZY-Ang/clawdy/tree/main/plugins/handoff",
+  "repository": "https://github.com/ZY-Ang/clawdy",
+  "license": "MIT"
+}

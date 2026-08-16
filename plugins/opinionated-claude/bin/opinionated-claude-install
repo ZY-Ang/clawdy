@@ -1,0 +1,66 @@
+#!/bin/bash
+# Merge the conventions into a CLAUDE.md, inside a managed block.
+#
+#   opinionated-claude-install              # ~/.claude/CLAUDE.md
+#   opinionated-claude-install --project    # ./CLAUDE.md
+#   opinionated-claude-install --print      # print, write nothing
+#   opinionated-claude-install --remove     # take the block out again
+#
+# Everything outside the markers is left exactly as it was, so this is safe to
+# run against a CLAUDE.md you have already written. Re-running replaces the
+# block rather than appending a second copy.
+
+set -eu
+
+SRC="$(cd "$(dirname "$0")/.." && pwd)/conventions.md"
+BEGIN='<!-- BEGIN opinionated-claude -->'
+END='<!-- END opinionated-claude -->'
+
+TARGET="$HOME/.claude/CLAUDE.md"
+MODE=install
+for arg in "$@"; do
+  case "$arg" in
+    --project) TARGET="CLAUDE.md" ;;
+    --print)   MODE=print ;;
+    --remove)  MODE=remove ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    *) echo "unknown option: $arg" >&2; exit 2 ;;
+  esac
+done
+
+[ -f "$SRC" ] || { echo "error: cannot find $SRC" >&2; exit 1; }
+
+if [ "$MODE" = print ]; then
+  printf '%s\n\n' "$BEGIN"; cat "$SRC"; printf '\n%s\n' "$END"; exit 0
+fi
+
+mkdir -p "$(dirname "$TARGET")"
+[ -f "$TARGET" ] || : > "$TARGET"
+
+# Strip any existing managed block, preserving everything else verbatim.
+STRIPPED=$(mktemp)
+awk -v b="$BEGIN" -v e="$END" '
+  index($0,b){skip=1; next}
+  index($0,e){skip=0; next}
+  !skip{print}
+' "$TARGET" > "$STRIPPED"
+
+# Drop trailing blank lines so repeat runs do not accumulate whitespace.
+CLEAN=$(mktemp)
+awk 'BEGIN{n=0} {lines[NR]=$0} END{last=NR; while(last>0 && lines[last]~/^[[:space:]]*$/) last--; for(i=1;i<=last;i++) print lines[i]}' "$STRIPPED" > "$CLEAN"
+
+if [ "$MODE" = remove ]; then
+  mv "$CLEAN" "$TARGET"; rm -f "$STRIPPED"
+  echo "Removed the opinionated-claude block from $TARGET"
+  exit 0
+fi
+
+OUT=$(mktemp)
+cat "$CLEAN" > "$OUT"
+[ -s "$CLEAN" ] && printf '\n' >> "$OUT"
+{ printf '%s\n\n' "$BEGIN"; cat "$SRC"; printf '\n%s\n' "$END"; } >> "$OUT"
+mv "$OUT" "$TARGET"
+rm -f "$STRIPPED" "$CLEAN"
+
+echo "Wrote the opinionated-claude block to $TARGET"
+echo "Everything outside the markers was left alone. Re-run to update; --remove to take it out."

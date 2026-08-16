@@ -1,0 +1,225 @@
+#!/bin/sh
+# What to work on next, in an order that is the same every time.
+#
+#   backlog-queue                  # the ready queue, best first
+#   backlog-queue --top 5
+#   backlog-queue --why            # the sort key beside each line
+#   backlog-queue --blocked        # what is NOT ready, and what is holding it
+#   backlog-queue --repo owner/n
+#
+# A loop that picks the first open issue it sees works whatever it happened to
+# read first, which is why a class fix sits open while its six instances get
+# fixed one by one. This ranks instead.
+#
+# The order is lexicographic over fixed keys -- no weights. Weights are a
+# permanent argument, and changing one silently reorders everything.
+#
+#   severity      data-loss-risk or security first, above everything
+#   priority      cost if this is never done; ages upward, one step at a time
+#   urgency       whether waiting makes it worse
+#   dependents    unblock the most other work
+#   size          s before l -- finish things rather than start them
+#   number        oldest first, so the order is TOTAL and reproducible
+#
+# Exit: 0 something is ready · 1 nothing is · 2 could not tell.
+# An unreachable backend is never a pass -- see pr-watch for the same rule.
+#
+# Seams, so ordering is provable without a network:
+#   BACKLOG_ISSUES_JSON   a file of provider-shaped issue JSON
+#   BACKLOG_NOW           a fixed epoch, so age never drifts between runs
+#   ESCALATE_DAYS         days in the ready set per priority step (default 21)
+
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PM_LIB=$HERE/../lib
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+. "$HERE/../lib/deps.sh"
+
+usage() { sed -n '2,12p' "$0"; exit "${1:-0}"; }
+
+TOP=0; WHY=0; BLOCKED=0; REPO=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --top) TOP=${2:?}; shift 2 ;;
+    --why) WHY=1; shift ;;
+    --blocked) BLOCKED=1; shift ;;
+    --repo) REPO=${2:?}; shift 2 ;;
+    -h|--help) usage 0 ;;
+    *) echo "backlog-queue: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+command -v jq >/dev/null || { echo "backlog-queue: jq is not installed" >&2; exit 2; }
+
+JQ_ERR=${TMPDIR:-/tmp}/backlog-queue.$$.err
+# `|| :` is load-bearing. An EXIT trap whose last command fails CLOBBERS the
+# script's exit status: with rm unavailable this exited 127 having already
+# decided on 2, so "could not reach the backend" arrived as something else
+# entirely. The contract says an unreachable backend is exit 2, and a cleanup
+# step must never be able to change that.
+trap 'rm -f "$JQ_ERR" 2>/dev/null || :' EXIT INT TERM
+
+NOW=${BACKLOG_NOW:-$(date -u +%s)}
+ESC=${ESCALATE_DAYS:-21}
+[ "$ESC" -ge 1 ] 2>/dev/null || { echo "backlog-queue: ESCALATE_DAYS must be >= 1" >&2; exit 2; }
+
+if [ -n "${BACKLOG_ISSUES_JSON:-}" ]; then
+  JSON=$(cat "$BACKLOG_ISSUES_JSON") || { echo "backlog-queue: cannot read $BACKLOG_ISSUES_JSON" >&2; exit 2; }
+else
+  provider_available || { echo "backlog-queue: $(provider_name) is not available" >&2; exit 2; }
+  JSON=$(provider_issues "$REPO") || { echo "backlog-queue: could not list issues" >&2; exit 2; }
+fi
+[ -n "$JSON" ] || { echo "backlog-queue: no data from $(provider_name)" >&2; exit 2; }
+
+# BACKLOG_DEPS_JSON states the whole graph, replacing whatever the issues carry.
+# The edges are the hardest input to obtain and the easiest to get wrong: on the
+# repository this was designed from, every blockedBy was empty across all 160
+# issues, so a fixture drawn from real data cannot exercise the dependents term
+# at all -- and that term is the one thing lifting a class fix above its
+# instances, which is what this whole plugin exists for.
+if [ -n "${BACKLOG_DEPS_JSON:-}" ]; then
+  EDGES=$(deps_normalise "$JSON") || { echo "backlog-queue: cannot read $BACKLOG_DEPS_JSON" >&2; exit 2; }
+  JSON=$(printf '%s' "$JSON" | jq -e --argjson e "$EDGES" '
+    ($e | map({ (.number | tostring): .blockedBy }) | add // {}) as $m
+    | map(.blockedBy = ($m[.number | tostring] // []))
+  ' 2>/dev/null) || { echo "backlog-queue: could not apply the dependency graph" >&2; exit 2; }
+fi
+
+# One jq pass over the whole array, because dependents_count needs the graph and
+# splitting it across jq and the shell means rebuilding sort keys with string
+# surgery. Numbers are inverted and zero-padded so a plain lexicographic `sort`
+# reproduces the order -- no numeric sort flags, which differ across platforms.
+RANKED=$(printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson esc "$ESC" '
+  def lbl: [ .labels[]? | (.name // .) ];
+  # gh returns blockedBy as an OBJECT wrapping the list -- {"nodes":[],"totalCount":0}
+  # -- not as a plain array. Iterating the object handed the inner array to
+  # .number and jq aborted on every issue, so the queue exited 2 against any real
+  # repository and had only ever run against a fixture. Both shapes are accepted,
+  # so a provider that does return a plain array keeps working.
+  # An element is either an object carrying a number field -- what the gh nodes
+  # hold -- or a bare integer, which is what the provider contract in this repo
+  # documents. Writing it as .number // . errors on the integer, because jq
+  # cannot index a number with a string, so the type is checked not assumed.
+  # NOTE: no apostrophes in here. This jq program is single-quoted, and one
+  # apostrophe ends it and hands the rest to the shell.
+  def edge: if type == "object" then .number else . end;
+  def blockers: [ (.blockedBy | if type == "object" then (.nodes // []) else (. // []) end)[]?
+                  | edge ];
+  def pad3: (1000 + .) | tostring | .[1:];
+  def pad8: (100000000 + .) | tostring | .[1:];
+
+  . as $all
+  | [ $all[] | { n: .number, blocks: blockers } ] as $edges
+
+  | [ $all[]
+      | . as $i
+      | (lbl) as $L
+      | (if   ($L | index("priority-high")) then 3
+         elif ($L | index("priority-med"))  then 2
+         elif ($L | index("priority-low"))  then 1
+         else 2 end) as $base
+      | (if ($L | index("urgency-high")) then 2 else 1 end) as $urg
+      | (if ($L | index("data-loss-risk")) or ($L | index("security")) then 0 else 1 end) as $sev
+      | (if   ($L | index("size-s")) then 1
+         elif ($L | index("size-m")) then 2
+         elif ($L | index("size-l")) then 3 else 2 end) as $size
+      # Which axes are being GUESSED. A default keeps an unlabelled issue from
+      # being buried, and it also makes a flat order look like a ranking -- so
+      # --why says which keys were not actually supplied.
+      | ([ (if ($L | any(startswith("priority-"))) then empty else "priority" end),
+           (if ($L | any(startswith("urgency-")))  then empty else "urgency"  end),
+           (if ($L | any(startswith("size-")))     then empty else "size"     end) ]
+         | join(",")) as $defaulted
+      # UNTRIAGED sorts second, above priority and below severity only.
+      #
+      # Treating a missing axis as medium keeps an unlabelled issue from being
+      # buried, but medium is exactly where things get buried: it puts an
+      # unclassified issue in the middle of the queue, indistinguishable from
+      # work somebody deliberately ranked as medium. An unlabelled backlog does
+      # not rank badly, it ranks FLAT -- everything ties and falls through to
+      # issue number, which is the arrival order the queue exists to replace.
+      #
+      # Safe now, and not before: file-issue has required the three axes on a
+      # task since #38, so nothing new can arrive unlabelled. The untriaged set
+      # is closed and shrinking -- legacy issues and anything raised by hand in
+      # the web UI -- so promoting it is self-correcting: each one leaves the
+      # position as soon as somebody classifies it.
+      #
+      # needs-human is EXEMPT. A question is not queue work and file-issue does
+      # not ask it for axes. Clearing the label with reply-issue --clears is
+      # what turns it into work, and that is the moment it becomes untriaged and
+      # surfaces here -- which is the behaviour wanted, arrived at for free.
+      | (if ($L | index("needs-human")) then 1
+         elif $defaulted == "" then 1 else 0 end) as $triaged
+      # Floored at zero. A negative age -- an issue created after the clock, from
+      # skew or from a pinned BACKLOG_NOW -- otherwise SUBTRACTS from priority:
+      # a priority-high issue silently ranked as medium, with "priority=2(base 3)"
+      # the only sign, and nothing anywhere calling it an error. Ageing is only
+      # ever meant to promote.
+      | ([0, ((($now - (($i.createdAt // "1970-01-01T00:00:00Z") | fromdateiso8601)) / 86400) | floor)] | max) as $age
+      | ([3, ($base + (($age / $esc) | floor))] | min) as $eff
+      | ([ $edges[] | select(.blocks | index($i.number)) ] | length) as $dep
+      # A human has answered when the LAST comment is not agent-marked -- the
+      # same verdict check-replies computes, deliberately not a second copy.
+      | (($i.comments // []) | if length == 0 then false
+            else ((last.body // "") | startswith("🤖") | not) end) as $answered
+      | (if   (($L | index("needs-human")) and ($answered | not)) then "needs-human, unanswered"
+         elif ($L | index("claimed"))  then "claimed by a branch"
+         elif ($L | index("finding"))  then "a finding - it is a sub-issue, not queue work"
+         elif ((blockers | length) > 0) then "blocked by " + ([ blockers[] | "#" + (.|tostring) ] | join(", "))
+         else "-" end) as $why
+      | [ (if $why == "-" then "READY" else "BLOCKED" end),
+          (($sev|tostring) + ($triaged|tostring) + ((3-$eff)|tostring) + ((2-$urg)|tostring)
+           + ((999-$dep)|pad3) + ($size|tostring) + ($i.number|pad8)),
+          ($i.number|tostring), $why, ($sev|tostring), ($eff|tostring),
+          ($base|tostring), ($dep|tostring), ($age|tostring),
+          # "-" not "": tab is an IFS whitespace character, so an empty field
+          # collapses and every field after it shifts by one. That has already
+          # cost this repo two debugging sessions.
+          (if $defaulted == "" then "-" else $defaulted end),
+          (if ($i.title // "") == "" then "-" else $i.title end) ]
+    ]
+  | .[] | @tsv
+' 2>"$JQ_ERR") || {
+  echo "backlog-queue: could not parse the issue list" >&2
+  # jq's own diagnostic names the field and the shape; the friendly message
+  # names neither. Discarding it cost a release: the queue failed on every issue
+  # of every real repo and said only "could not parse".
+  [ -s "$JQ_ERR" ] && sed 's/^/backlog-queue: /' "$JQ_ERR" >&2
+  exit 2
+}
+
+[ -n "$RANKED" ] || { echo "Nothing open."; exit 1; }
+
+WANT=READY; [ "$BLOCKED" -eq 1 ] && WANT=BLOCKED
+# A real tab, not the two characters backslash-t: `sort -t` and `IFS` both take
+# the character, and a literal \t silently mis-splits every row.
+TAB=$(printf '\t')
+OUT=$(printf '%s\n' "$RANKED" | awk -F"$TAB" -v want="$WANT" '$1==want' | sort -t"$TAB" -k2,2)
+
+if [ -z "$OUT" ]; then
+  if [ "$BLOCKED" -eq 1 ]; then echo "Nothing is blocked."; exit 0; fi
+  echo "Nothing is ready."; exit 1
+fi
+
+n=0
+printf '%s\n' "$OUT" | while IFS="$TAB" read -r _state key num why sev eff base dep age defaulted title; do
+  n=$((n + 1))
+  if [ "$TOP" -gt 0 ] && [ "$n" -gt "$TOP" ]; then break; fi
+  # "-" is the not-empty placeholder the jq pass writes; it never means a reason.
+  suffix=""
+  [ "$why" != "-" ] && suffix=" :: $why"
+  printf '#%-5s %s%s\n' "$num" "$title" "$suffix"
+  if [ "$WHY" -eq 1 ]; then
+    printf '        key=%s  severity=%s priority=%s(base %s) unblocks=%s age=%sd\n' \
+      "$key" "$sev" "$eff" "$base" "$dep" "$age"
+    # Say when a key was guessed rather than read. A backlog with no axes ranks
+    # FLAT -- everything ties and falls through to issue number -- and without
+    # this line that looks identical to a ranking.
+    [ "$defaulted" != "-" ] && \
+      printf '        UNTRIAGED: %s not supplied. It is here to be classified, not because\n' "$defaulted"
+      printf '        anyone ranked it -- the priority shown is a default, not a decision.\n'
+  fi
+done

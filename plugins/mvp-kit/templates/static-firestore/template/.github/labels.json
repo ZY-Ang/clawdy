@@ -1,0 +1,10 @@
+[
+  { "name": "bug",             "color": "d73a4a", "description": "Something is broken" },
+  { "name": "enhancement",     "color": "a2eeef", "description": "New behaviour" },
+  { "name": "security",        "color": "b60205", "description": "Access control, secrets, or auth" },
+  { "name": "data-loss-risk",  "color": "b60205", "description": "Could lose or clobber saved data" },
+  { "name": "needs-human",     "color": "fbca04", "description": "Blocked on a decision only a person can make — agents skip these" },
+  { "name": "tech-debt",       "color": "cfd3d7", "description": "Works, but will cost later" },
+  { "name": "documentation",   "color": "0075ca", "description": "Docs only" },
+  { "name": "good first issue","color": "7057ff", "description": "Small and self-contained" }
+]

@@ -1,0 +1,120 @@
+#!/bin/sh
+# A plugin whose shipped files changed must also change its version.
+#
+#   require-version-bump <base-ref>
+#
+# The rule this enforces is already written down -- "a fix without a version
+# bump never reaches installed users" -- and it was broken within an hour of
+# being written, twice in the same field. Two pull requests each took
+# opinionated-claude from 1.5.0 to 1.6.0. The first merged; the second kept its
+# now-redundant bump, changed conventions.md, and shipped different content
+# under a version that was already published.
+#
+# Nothing caught it because nothing was looking. A human noticed.
+#
+# tests/ is excluded on purpose. Test files ship with the plugin but no
+# installed user runs them, so requiring a bump for a test-only change buys
+# nothing and trains people to bump without meaning it.
+#
+# A version that goes backwards fails too. That is not a hypothetical: it is
+# what the losing side of a version race produces once the winner has merged.
+#
+# Exit: 0 every touched plugin bumped · 1 at least one did not · 2 usage.
+
+set -eu
+
+[ $# -eq 1 ] || { echo "usage: require-version-bump <base-ref>" >&2; exit 2; }
+BASE=$1
+
+git rev-parse --verify "$BASE" >/dev/null 2>&1 || {
+  echo "require-version-bump: cannot resolve base ref '$BASE'" >&2; exit 2; }
+
+version_at() {
+  # $1 ref, $2 path. Empty output means "not present at that ref".
+  git show "$1:$2" 2>/dev/null |
+    sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+}
+
+# Plugins this change declares it is deliberately re-versioning downwards.
+RESETS=$(git log "$BASE"..HEAD --format=%B 2>/dev/null |
+         sed -n 's/^Version-Reset:[[:space:]]*//p' | tr -d '\r' | sort -u)
+
+fail=0
+changed=$(git diff --name-only "$BASE"...HEAD -- 'plugins/*' |
+          grep -v '^plugins/[^/]*/tests/' |
+          cut -d/ -f2 | sort -u)
+
+[ -n "$changed" ] || { echo "no plugin files changed"; exit 0; }
+
+for p in $changed; do
+  manifest="plugins/$p/.claude-plugin/plugin.json"
+
+  now=$(version_at HEAD "$manifest")
+  was=$(version_at "$BASE" "$manifest")
+
+  if [ -z "$now" ]; then
+    echo "  $p: removed, or has no manifest -- skipped"
+    continue
+  fi
+  if [ -z "$was" ]; then
+    echo "  $p: new plugin at $now -- nothing to compare"
+    continue
+  fi
+  if [ "$now" = "$was" ]; then
+    echo "  $p: FAIL -- files changed, version still $now"
+    fail=1
+    continue
+  fi
+
+  # A bump that goes DOWN is the same silent defect wearing a different hat, and
+  # it is what a branch racing another for a version number produces. If one
+  # lands at 1.8.0, a branch still carrying 1.7.0 is not stale -- it republishes
+  # a number that is already behind, and nothing downstream notices.
+  newest=$(printf '%s\n%s\n' "$was" "$now" | sort -V | tail -1)
+  if [ "$now" != "$newest" ]; then
+    # Deliberately moving a version backwards is a real operation -- taking a
+    # plugin that was numbered 1.x back under 1.0 to say it is not stable yet.
+    # It is also indistinguishable from the accident this check exists to catch,
+    # so it has to be DECLARED rather than inferred.
+    #
+    # A commit-message trailer, not an environment variable: it lands in the
+    # history next to the change, survives a rebase, and is visible in the diff
+    # review rather than in a CI configuration nobody reads.
+    #
+    #   Version-Reset: opinionated-claude
+    if printf '%s' "$RESETS" | grep -qx "$p"; then
+      echo "  $p: $was -> $now (reset, declared)"
+      continue
+    fi
+    echo "  $p: FAIL -- $now is lower than $was, which is already published"
+    fail=1
+    continue
+  fi
+
+  echo "  $p: $was -> $now"
+done
+
+if [ "$fail" -ne 0 ]; then
+  cat >&2 <<'MSG'
+
+A plugin's shipped files changed, and its version did not move forward.
+
+Installs pin to a version. Publishing different content under a number
+somebody already has means their copy never updates, and nothing anywhere
+reports a problem -- which is why this is a gate and not a note.
+
+Set a HIGHER version in plugins/<name>/.claude-plugin/plugin.json.
+
+Both failures above come from the same place. If two branches bump to the
+same number and one merges first, the second is not merely stale: whether it
+now reads equal or lower, the number that landed is taken, and the fix is to
+go past it rather than to match it.
+
+If a version is going DOWN on purpose -- taking a plugin back under 1.0 to say
+it is not stable yet -- declare it in a commit message and it is allowed:
+
+  Version-Reset: <plugin>
+MSG
+  exit 1
+fi
+exit 0

@@ -1,0 +1,352 @@
+#!/bin/sh
+# Install and supervise a durable loop, so it survives what /loop does not.
+#
+#   loop-ctl install <name> --interval 10m --prompt "..."   # or --prompt-file
+#   loop-ctl doctor  <name>     # prove it works on THIS machine
+#   loop-ctl status  <name>     # last tick, gap, whether ticks were missed
+#   loop-ctl logs    <name>     # tail the log
+#   loop-ctl list
+#   loop-ctl uninstall <name>
+#
+# install writes the scheduler entry. It does NOT claim the loop works -- that is
+# doctor's job, and doctor is the reason this is worth trusting. Three tools in
+# this repo have already shipped broken because they assumed their environment
+# resembled an interactive shell; a scheduler entry is the worst place to repeat
+# that, because its failure is silent by construction.
+#
+# Currently supports launchd (macOS). systemd is stubbed with a clear error.
+
+set -eu
+
+LOOP_HOME=${CLAWDY_LOOP_HOME:-$HOME/.claude/clawdy-loop}
+LABEL_PREFIX=com.clawdy.loop
+
+die() { echo "loop-ctl: $1" >&2; exit 2; }
+have() { command -v "$1" >/dev/null 2>&1; }
+
+plist_path() { echo "$HOME/Library/LaunchAgents/$LABEL_PREFIX.$1.plist"; }
+label()      { echo "$LABEL_PREFIX.$1"; }
+
+# Paths are not ours to constrain -- a home directory called "R&D" is perfectly
+# legal and would produce a plist that is not well-formed XML. launchd's response
+# to a malformed plist is to not run the job, silently, which is the exact
+# failure this tool exists to remove.
+xml() { printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'; }
+
+# The name, by contrast, is ours: it becomes a filename, a launchd label and XML
+# content, so it is validated rather than escaped three different ways.
+check_name() {
+  case "$1" in
+    ''|*[!A-Za-z0-9._-]*)
+      die "loop name '$1' must be letters, digits, dot, dash or underscore" ;;
+  esac
+}
+
+# Seconds from 10m / 2h / 900.
+to_seconds() {
+  case "$1" in
+    *m) echo $(( ${1%m} * 60 )) ;;
+    *h) echo $(( ${1%h} * 3600 )) ;;
+    *s) echo "${1%s}" ;;
+    *[!0-9]*) die "bad interval '$1' (use 10m, 2h, or seconds)" ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# cron cannot express every interval: */7 gives an uneven :56->:00 gap, and 90
+# minutes is not expressible at all. Round to the nearest clean divisor and say
+# so, rather than installing a schedule that silently drifts.
+to_cron() {
+  secs=$1
+  if [ "$secs" -lt 3600 ]; then
+    m=$((secs / 60))
+    while [ "$m" -gt 1 ] && [ $((60 % m)) -ne 0 ]; do m=$((m - 1)); done
+    [ $((m * 60)) -eq "$secs" ] || echo "loop-ctl: rounded ${secs}s to ${m}m — cron needs a clean divisor of an hour" >&2
+    echo "*/$m * * * *"
+  else
+    h=$((secs / 3600))
+    while [ "$h" -gt 1 ] && [ $((24 % h)) -ne 0 ]; do h=$((h - 1)); done
+    [ $((h * 3600)) -eq "$secs" ] || echo "loop-ctl: rounded ${secs}s to ${h}h — cron needs a clean divisor of a day" >&2
+    echo "0 */$h * * *"
+  fi
+}
+
+# Rewrite our own block in the crontab and leave every other line untouched. A
+# managed block is the only safe way to edit a file the user also owns.
+cron_write() { # cron_write <name> <line-or-empty>
+  n=$1; line=${2:-}
+  begin="# BEGIN clawdy-loop $n"; end="# END clawdy-loop $n"
+  existing=$(crontab -l 2>/dev/null || true)
+  kept=$(printf '%s\n' "$existing" | awk -v b="$begin" -v e="$end" '
+    $0 == b {skip=1} !skip {print} $0 == e {skip=0}')
+  if [ -n "$line" ]; then
+    printf '%s\n%s\n%s\n%s\n' "$kept" "$begin" "$line" "$end" | sed '/^$/d' | crontab -
+  else
+    printf '%s\n' "$kept" | sed '/^$/d' | crontab -
+  fi
+}
+
+uuid() {
+  if have uuidgen; then uuidgen | tr 'A-Z' 'a-z'
+  elif [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid
+  else die "no uuidgen; cannot mint a session id"; fi
+}
+
+human_gap() {
+  h=$(( $1 / 3600 )); m=$(( ($1 % 3600) / 60 ))
+  if [ "$h" -gt 0 ]; then printf '%dh %dm' "$h" "$m"; else printf '%dm' "$m"; fi
+}
+
+cmd=${1:-}; [ -n "$cmd" ] || { sed -n '2,12p' "$0"; exit 0; }
+shift || true
+
+case "$cmd" in
+# -----------------------------------------------------------------------------
+install)
+  NAME=${1:-}; [ -n "$NAME" ] || die "usage: loop-ctl install <name> --interval 10m --prompt ..."
+  shift
+  check_name "$NAME"
+  INTERVAL_H=10m; PROMPT=""; PROMPT_FILE=""; CAFFEINATE=0; WORKDIR=$PWD
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --interval) INTERVAL_H=${2:?}; shift 2 ;;
+      --prompt) PROMPT=${2:?}; shift 2 ;;
+      --prompt-file) PROMPT_FILE=${2:?}; shift 2 ;;
+      --dir) WORKDIR=${2:?}; shift 2 ;;
+      --caffeinate) CAFFEINATE=1; shift ;;
+      *) die "unknown option $1" ;;
+    esac
+  done
+  [ -n "$PROMPT_FILE" ] && PROMPT=$(cat "$PROMPT_FILE")
+  [ -n "$PROMPT" ] || die "need --prompt or --prompt-file"
+  [ -d "$WORKDIR" ] || die "--dir $WORKDIR does not exist"
+
+  INTERVAL=$(to_seconds "$INTERVAL_H")
+  [ "$INTERVAL" -ge 60 ] || die "interval must be at least 60s"
+
+  # An absolute path, resolved now. launchd runs with a minimal environment and
+  # will not find `claude` on a PATH set by a shell profile it never loads --
+  # the single most common way a launchd job fails, and it fails silently.
+  CLAUDE_BIN=${CLAWDY_LOOP_CLAUDE:-$(command -v claude || true)}
+  [ -n "$CLAUDE_BIN" ] || die "claude is not on PATH; set CLAWDY_LOOP_CLAUDE to its full path"
+  case "$CLAUDE_BIN" in /*) ;; *) die "claude resolved to a relative path" ;; esac
+
+  RUNNER=${CLAWDY_LOOP_RUNNER:-$(dirname "$0")/loop-run}
+  case "$RUNNER" in /*) ;; *) RUNNER=$(cd "$(dirname "$RUNNER")" && pwd)/$(basename "$RUNNER") ;; esac
+  [ -x "$RUNNER" ] || die "loop-run not found or not executable at $RUNNER"
+
+  mkdir -p "$LOOP_HOME"
+  CONF=$LOOP_HOME/$NAME.conf
+  if [ -f "$CONF" ]; then
+    # Keep the session id: replacing it would orphan the conversation and every
+    # tick of accumulated context with it.
+    # shellcheck disable=SC1090
+    SESSION_ID=$(. "$CONF"; echo "$SESSION_ID")
+    echo "loop-ctl: reusing existing session $SESSION_ID"
+  else
+    SESSION_ID=$(uuid)
+  fi
+
+  {
+    echo "# written by loop-ctl -- edit PROMPT freely, leave SESSION_ID alone"
+    echo "SESSION_ID=$SESSION_ID"
+    echo "INTERVAL=$INTERVAL"
+    printf "PROMPT='%s'\n" "$(printf '%s' "$PROMPT" | sed "s/'/'\\\\''/g")"
+  } > "$CONF"
+
+  if ! have launchctl; then
+    have crontab || die "no launchctl and no crontab. Run loop-env to see what this host can schedule. If the session is reachable from outside (environment_kind bridge or anthropic_cloud), do not use loop-ctl at all -- re-arm with send_later each tick instead; it is server-side and survives more"
+    CRON_EXPR=$(to_cron "$INTERVAL")
+    # The environment is pinned inline: cron gives a job almost none of one, and
+    # a job that cannot find `claude` fails silently, exactly as under launchd.
+    LINE="$CRON_EXPR CLAWDY_LOOP_HOME='$LOOP_HOME' CLAWDY_LOOP_CLAUDE='$CLAUDE_BIN' cd '$WORKDIR' && '$RUNNER' '$NAME' >> '$LOOP_HOME/$NAME.cron.log' 2>&1"
+    cron_write "$NAME" "$LINE" || die "could not write the crontab"
+    echo "Installed '$NAME' — $CRON_EXPR via cron, session $SESSION_ID"
+    echo "  config: $CONF"
+    echo
+    echo "NOT yet proven to work. Run:  loop-ctl doctor $NAME"
+    exit 0
+  fi
+
+  PLIST=$(plist_path "$NAME"); LBL=$(label "$NAME")
+  mkdir -p "$(dirname "$PLIST")"
+
+  # caffeinate -s keeps the machine awake for the tick. Built as a wrapper with
+  # the name baked in, so ProgramArguments stays a single entry either way rather
+  # than a conditional inside the plist heredoc.
+  PROGRAM=$RUNNER
+  PROG_ARGS="    <string>$NAME</string>"
+  if [ "$CAFFEINATE" -eq 1 ]; then
+    if have caffeinate; then
+      WRAP=$LOOP_HOME/$NAME.wrap
+      printf '#!/bin/sh\nexec /usr/bin/caffeinate -s "%s" "%s"\n' "$RUNNER" "$NAME" > "$WRAP"
+      chmod +x "$WRAP"
+      PROGRAM=$WRAP
+      PROG_ARGS=""
+    else
+      echo "loop-ctl: --caffeinate asked for but caffeinate is missing; continuing without it" >&2
+    fi
+  fi
+
+  X_PROGRAM=$(xml "$PROGRAM"); X_WORKDIR=$(xml "$WORKDIR")
+  X_HOME=$(xml "$HOME"); X_CLAUDE=$(xml "$CLAUDE_BIN")
+  X_LOOPHOME=$(xml "$LOOP_HOME"); X_LOG=$(xml "$LOOP_HOME/$NAME.launchd.log")
+  X_PATH=$(xml "$(dirname "$CLAUDE_BIN"):/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin")
+
+  cat > "$PLIST" <<PLISTEOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>$LBL</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>$X_PROGRAM</string>
+$PROG_ARGS
+  </array>
+  <key>StartInterval</key><integer>$INTERVAL</integer>
+  <key>RunAtLoad</key><true/>
+  <key>WorkingDirectory</key><string>$X_WORKDIR</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>$X_PATH</string>
+    <key>HOME</key><string>$X_HOME</string>
+    <key>CLAWDY_LOOP_CLAUDE</key><string>$X_CLAUDE</string>
+    <key>CLAWDY_LOOP_HOME</key><string>$X_LOOPHOME</string>
+  </dict>
+  <key>StandardOutPath</key><string>$X_LOG</string>
+  <key>StandardErrorPath</key><string>$X_LOG</string>
+</dict>
+</plist>
+PLISTEOF
+
+  launchctl unload "$PLIST" 2>/dev/null || true
+  launchctl load "$PLIST" || die "launchctl load failed"
+
+  echo "Installed '$NAME' — every $INTERVAL_H, session $SESSION_ID"
+  echo "  plist:  $PLIST"
+  echo "  config: $CONF"
+  echo
+  echo "NOT yet proven to work. Run:  loop-ctl doctor $NAME"
+  ;;
+
+# -----------------------------------------------------------------------------
+doctor)
+  NAME=${1:-}; [ -n "$NAME" ] || die "usage: loop-ctl doctor <name>"
+  check_name "$NAME"
+  CONF=$LOOP_HOME/$NAME.conf
+  fails=0
+  chk() { if [ "$1" -eq 0 ]; then printf '  ok    %s\n' "$2"; else fails=$((fails+1)); printf '  FAIL  %s\n' "$2"; [ -n "${3:-}" ] && printf '        %s\n' "$3"; fi; }
+
+  echo "Checking loop '$NAME'"
+  [ -f "$CONF" ]; chk $? "config exists" "run: loop-ctl install $NAME ..."
+  [ -f "$CONF" ] || exit 1
+  # shellcheck disable=SC1090
+  . "$CONF"
+
+  CLAUDE_BIN=${CLAWDY_LOOP_CLAUDE:-$(command -v claude || echo "")}
+  [ -n "$CLAUDE_BIN" ] && [ -x "$CLAUDE_BIN" ]; chk $? "claude is executable at an absolute path" "$CLAUDE_BIN"
+
+  if have launchctl; then
+    PLIST=$(plist_path "$NAME"); LBL=$(label "$NAME")
+    [ -f "$PLIST" ]; chk $? "plist exists" "$PLIST"
+    launchctl list 2>/dev/null | grep -q "$LBL"; chk $? "job is loaded in launchd" "run: launchctl load $PLIST"
+
+    # The environment launchd gives the job, not the one this shell has.
+    if [ -f "$PLIST" ]; then
+      p=$(/usr/libexec/PlistBuddy -c 'Print :EnvironmentVariables:PATH' "$PLIST" 2>/dev/null || echo "")
+      [ -n "$p" ]; chk $? "plist pins PATH (launchd does not read your shell profile)"
+    fi
+
+    # Sleep is the failure launchd cannot see. StartInterval does not fire while
+    # the machine is asleep -- it fires once on wake -- so an overnight loop on a
+    # laptop that sleeps produces exactly the multi-hour gap this exists to stop.
+    if have pmset; then
+      slp=$(pmset -g 2>/dev/null | awk '/^[ ]*sleep/ {print $2; exit}')
+      if [ -n "$slp" ] && [ "$slp" != "0" ]; then
+        fails=$((fails+1))
+        printf '  FAIL  machine sleeps after %s min — launchd will NOT fire while asleep\n' "$slp"
+        printf '        reinstall with --caffeinate, or: sudo pmset -a sleep 0\n'
+      else
+        printf '  ok    machine does not sleep on its own\n'
+      fi
+    fi
+  elif have crontab; then
+    crontab -l 2>/dev/null | grep -q "clawdy-loop $NAME"; chk $? "cron entry present" \
+      "run: loop-ctl install $NAME ..."
+    # cron gives a job almost no environment, so the entry has to carry its own.
+    crontab -l 2>/dev/null | grep -A1 "BEGIN clawdy-loop $NAME" | grep -q 'CLAWDY_LOOP_CLAUDE='
+    chk $? "cron entry pins CLAWDY_LOOP_CLAUDE (cron has no PATH worth trusting)"
+  else
+    printf '  note  no launchctl and no crontab — this host cannot schedule anything.\n'
+    printf '        If the session is reachable from your phone, use a send_later chain instead.\n'
+    fails=$((fails+1))
+  fi
+
+  # The end-to-end check. Everything above is necessary; only this is sufficient.
+  printf '  ..    running one real tick (this costs a turn)\n'
+  if CLAWDY_LOOP_HOME=$LOOP_HOME "$(dirname "$0")/loop-run" "$NAME" >/dev/null 2>&1; then
+    chk 0 "a real tick ran end to end"
+  else
+    chk 1 "a real tick ran end to end" "see $LOOP_HOME/$NAME.log"
+  fi
+
+  echo
+  if [ "$fails" -eq 0 ]; then echo "All checks passed. The loop is durable."; exit 0; fi
+  echo "$fails check(s) failed — the loop is NOT durable yet."; exit 1
+  ;;
+
+# -----------------------------------------------------------------------------
+status)
+  NAME=${1:-}; [ -n "$NAME" ] || die "usage: loop-ctl status <name>"
+  check_name "$NAME"
+  CONF=$LOOP_HOME/$NAME.conf; STATE=$LOOP_HOME/$NAME.state
+  [ -f "$CONF" ] || die "no such loop '$NAME'"
+  # shellcheck disable=SC1090
+  . "$CONF"
+  printf 'loop     %s\nsession  %s\ninterval %sm\n' "$NAME" "$SESSION_ID" "$((INTERVAL / 60))"
+  if [ -f "$STATE" ]; then
+    read -r last count < "$STATE"
+    gap=$(( $(date +%s) - last ))
+    printf 'ticks    %s\nlast     %s ago\n' "$count" "$(human_gap "$gap")"
+    if [ "$gap" -gt $((INTERVAL * 2)) ]; then
+      printf 'STALLED  no tick for %s; expected one every %sm — roughly %s missed\n' \
+        "$(human_gap "$gap")" "$((INTERVAL / 60))" "$((gap / INTERVAL - 1))"
+      exit 1
+    fi
+    printf 'healthy  within one interval\n'
+  else
+    printf 'ticks    none yet\n'
+  fi
+  ;;
+
+logs)
+  NAME=${1:-}; [ -n "$NAME" ] || die "usage: loop-ctl logs <name>"
+  check_name "$NAME"
+  tail -n "${2:-40}" "$LOOP_HOME/$NAME.log" 2>/dev/null || die "no log yet"
+  ;;
+
+list)
+  [ -d "$LOOP_HOME" ] || { echo "No loops."; exit 0; }
+  found=0
+  for c in "$LOOP_HOME"/*.conf; do
+    [ -f "$c" ] || continue
+    found=1; n=$(basename "$c" .conf)
+    printf '%s\n' "$n"
+  done
+  [ "$found" -eq 1 ] || echo "No loops."
+  ;;
+
+uninstall)
+  NAME=${1:-}; [ -n "$NAME" ] || die "usage: loop-ctl uninstall <name>"
+  check_name "$NAME"
+  PLIST=$(plist_path "$NAME")
+  if have launchctl && [ -f "$PLIST" ]; then launchctl unload "$PLIST" 2>/dev/null || true; rm -f "$PLIST"; fi
+  if have crontab; then cron_write "$NAME" "" 2>/dev/null || true; fi
+  # The conversation and its log are kept deliberately -- they are the record of
+  # what the loop did, and are worth more than the scheduler entry.
+  echo "Removed the schedule for '$NAME'. Config, transcript and log kept in $LOOP_HOME"
+  ;;
+
+*) die "unknown command '$cmd'" ;;
+esac

@@ -1,0 +1,33 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Secrets. Nothing in this repo should need a .env, and if something starts to,
+# that is worth noticing rather than gitignoring: a static site has no server to
+# read one, so a secret here would be shipped to the browser.
+.env
+.env.*
+*-service-account*.json
+
+# Build output. `npm run build` regenerates dist/ from index.html, and CI
+# rebuilds it before every deploy. Committing it only creates a second, staler
+# copy of the app for the next person to be confused by.
+dist/
+node_modules/
+
+# Firebase CLI local state
+.firebase/
+*-debug.log
+firebase-export-*/
+
+# NOT ignored, on purpose:
+#
+#   firebase-config.js  -- the Firebase web config is handed to every visitor
+#                          anyway, and CI has no other way to build the site.
+#                          Access is decided by firestore.rules.
+#   backups/            -- the nightly backup workflow commits here. The repo
+#                          history IS the backup; ignoring it would delete the
+#                          only copy of the data that is not inside Firestore.

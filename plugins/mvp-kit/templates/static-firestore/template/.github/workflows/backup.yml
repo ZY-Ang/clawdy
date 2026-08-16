@@ -1,0 +1,60 @@
+# A copy of the data that is not in Firestore.
+#
+# Firestore's managed export is a Blaze-tier feature, so on the free plan the
+# live document is the only copy in existence and a bad write takes it with no
+# way back. This job reads it once a day and commits the JSON, which makes the
+# repo's history the backup: restoring is `git show` and a paste, and the copies
+# are already off Google's infrastructure on every clone.
+#
+# It commits straight to main rather than opening a pull request. A backup that
+# waits for a review is not a backup, and the commit touches nothing but
+# backups/ -- see the paths-ignore on the deploy workflow's trigger if this ever
+# starts causing deploy loops.
+
+name: Backup
+
+on:
+  schedule:
+    # 17:00 UTC daily -- outside the hours the app is likely to be in use, so a
+    # backup never races a save. Cron on GitHub is best-effort and can be
+    # delayed by tens of minutes under load; that is fine for a daily copy, and
+    # is worth knowing before treating a missing run as a failure.
+    - cron: '0 17 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Read the current state
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.__SA_SECRET__ }}
+        run: npm run backup
+
+      - name: Commit it if it changed
+        run: |
+          set -euo pipefail
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add backups/
+          # Nothing to commit is the normal outcome on a quiet day. Only a
+          # failure to READ the data is a real failure, and that already exited
+          # non-zero in the step above.
+          if git diff --cached --quiet; then
+            echo 'No change since the last backup.'
+            exit 0
+          fi
+          git commit -m "backup: $(date -u +%Y-%m-%d)"
+          git push

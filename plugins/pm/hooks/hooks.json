@@ -1,0 +1,27 @@
+{
+  "description": "Refuse inline questions once work has started; point at ask-async instead.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/deny-interrupt"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/remind-open-questions",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

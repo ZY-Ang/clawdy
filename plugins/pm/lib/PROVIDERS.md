@@ -1,0 +1,159 @@
+# Writing a provider
+
+`pm` talks to one tracker through one file. This describes the contract that file
+implements, and the places where GitHub's shape has leaked into it — so you find
+those out here rather than after writing the code.
+
+`lib/provider-github.sh` is the reference implementation and the only one today.
+
+## Where the seam is
+
+Every binary in `bin/` goes through it. `tests/seam.test.sh` fails the build if one
+stops doing so, because a prose promise about an interface decays silently — six of
+the ten tools called `gh` directly for weeks and nothing said so.
+
+Which one loads is chosen by **`PM_PROVIDER`**, default `github`:
+
+```sh
+PM_PROVIDER=jira backlog-queue
+```
+
+Every binary goes through `lib/load-provider.sh`, so there is nothing to edit. An unknown name
+exits `2` and lists what it did find; a file that loads without defining the contract exits `2`
+and points here, rather than failing three calls later as `provider_issues: not found`.
+
+## The contract
+
+`provider_name` and `provider_available` are the only two everything needs. The rest
+are needed by the tools that use them; implement what you use.
+
+| Function | Returns | Used by |
+| --- | --- | --- |
+| `provider_name` | a word, for messages | everything |
+| `provider_available` | `0` if reachable now | everything |
+| `provider_issues <repo>` | open issues, JSON array | `backlog-queue` `backlog-cluster` |
+| `provider_issue <n> <repo>` | one issue, JSON | `backlog-claim` `backlog-release` |
+| `provider_needs_human <repo>` | blocked issues + comments, JSON | `check-replies` |
+| `provider_create_issue <repo> <title> [label…]` | URL; **body on stdin** | `file-issue` `ask-async` |
+| `provider_comment <n> <body> <repo>` | — | `reply-issue` `backlog-*` |
+| `provider_label <n> <label> add\|remove <repo>` | — | `reply-issue` `backlog-*` |
+| `provider_issue_labels <n> <repo>` | names, one per line | `reply-issue` |
+| `provider_close_issue <n> <reason> <repo>` | — | `reply-issue` |
+| `provider_ensure_label <label> <repo>` | always `0` | `file-issue` `ask-async` |
+| `provider_supports_deps` | `0` if a dependency graph exists | `backlog-queue` |
+| `provider_is_triaged <issue-json>` | `0` triaged · `1` not · **`2` cannot tell** | ordering |
+| `provider_blocked_by <n> <repo>` | blocker numbers | `backlog-link` |
+| `provider_issue_id <n> <repo>` | the backend's own id | `backlog-link` |
+| `provider_link` / `provider_unlink` | — | `backlog-link` |
+| `provider_open_draft_pr` / `provider_find_pr` | URL / number | `backlog-claim` |
+
+### The normalised issue
+
+```json
+{ "number": 12, "title": "...", "state": "OPEN", "labels": ["task"],
+  "createdAt": "...", "updatedAt": "...",
+  "comments": [{ "author": "...", "body": "..." }],
+  "blockedBy": [7, 9] }
+```
+
+**Anything you cannot supply is an empty array, never absent.** A consumer that has to
+test for missing keys grows a branch per backend, which is the coupling the seam exists
+to prevent.
+
+`blockedBy` accepts a bare integer **or** an object carrying `number`. Both, because
+`gh` returns different shapes from different subcommands — and because this repo's own
+queue was broken on its own documented form for two releases (#33, #41).
+
+## Rules that are not style
+
+**An unreachable backend is never a pass.** `0` ready · `1` not ready · `2` could not tell.
+Never collapse "I could not ask" into "there is nothing". Read the status **unpiped** —
+after a pipe `$?` is the last stage's, and POSIX `sh` has no `PIPESTATUS` (#39).
+
+**Degrade, do not fail.** `provider_supports_deps` is the pattern: probe once, and if the
+backend has no dependency graph, produce an order without the dependents term rather than
+an error.
+
+**Never discard the backend's diagnostic.** Put it in `PROVIDER_ERR` and let the caller
+print it. `_gh_write` and `_gh_read` do this. Three different failures once printed the
+same four words, and one of them — an HTTP 422 naming the property, the value, its type,
+the required type and the docs URL — cost a live debugging session to recover (#45).
+
+**Types on the wire are part of the contract.** `gh api -f` sends a string; the endpoint
+wanted an integer; every call 422'd while every test passed. A fixture cannot catch that.
+
+## Testing without the backend
+
+| Seam | Stands in for |
+| --- | --- |
+| `BACKLOG_ISSUES_JSON` | `provider_issues` |
+| `BACKLOG_ISSUE_JSON` | `provider_issue` |
+| `BACKLOG_DEPS_JSON` | the whole dependency graph — **replaces**, never merges |
+| `BACKLOG_LINK_JSON` | `provider_blocked_by` |
+| `CHECK_REPLIES_JSON` | `provider_needs_human` |
+| `BACKLOG_NOW` | the clock. Not optional: without it, ageing cases drift a day at a time |
+| `STALE_HOURS` · `ESCALATE_DAYS` · `PM_LIMIT` · `PM_ASSUME_DEPS` | tunables |
+
+**A fixture for a wire format has to come off the wire.** `tests/fixtures/issues-github-shape.json`
+exists because a hand-written one agreed with the bug it was meant to catch.
+
+**And a fixture cannot catch a wrong scalar type in a request body.** For that,
+`tests/live.test.sh` — an opt-in round-trip in a throwaway repo, since it needs
+credentials, a network and a repo it may write to:
+
+```sh
+PM_LIVE_REPO=owner/scratch sh tests/live.test.sh
+```
+
+It files two issues, links them, reads the edge back, unlinks, claims, releases,
+asks and closes — and asserts each **read-back**, because the exit code is what
+passed while #45 was broken. It skips loudly rather than silently when unset.
+It also refuses to run against a repo whose name does not say `scratch`
+(`PM_LIVE_FORCE=1` overrides), because it closes issues in whatever it is
+pointed at.
+
+## Three assumptions that are GitHub's, not the contract's
+
+These are real limits. If any blocks you, that is a bug in the contract, not in your file.
+
+**One backend serves both issues and code review.** `backlog-claim` opens a draft PR and
+labels an issue in the same run. Where the tracker and the code host are separate products,
+the contract cannot currently express the split.
+
+**An issue is identified by an integer.** `backlog-link` validates `[!0-9]`, and
+`backlog-queue` sorts on `number` as its final tie-break. The tie-break needs *a total
+order*, not an integer — but the validation does not know that yet.
+
+**Ordering axes are labels.** `priority-high`, `size-s`, `needs-human`. A backend with
+native priority and estimate fields is currently made to fake them as labels.
+
+That one has a first crack at a fix. **`provider_is_triaged` asks the question rather than
+inspecting labels**, because *"has anyone classified this"* and *"does it carry three labels"*
+are only the same question on this backend. Where priority is a **mandatory field**, every issue
+has one from the moment it exists — usually defaulted by the tracker rather than chosen — and an
+issue nobody looked at is indistinguishable from one deliberately set to the middle value.
+
+Returning **`2`** means *this backend cannot distinguish a chosen priority from a defaulted one*.
+
+**It is not a licence to carry on ranking.** Dropping the untriaged key and sorting by priority as
+usual asserts that every priority was chosen — and produces a confidently differentiated order
+built from values nobody set. A flat order is visibly useless; that one looks authoritative, which
+is worse.
+
+This matters more than it looks because **priority is the key the order actually turns on.**
+Severity sits above it and fires only for `security` and `data-loss-risk` — two labels a repository
+may not even define, in which case priority decides everything.
+
+So a caller receiving `2` must **say so in its output**. `backlog-queue --why` already reports
+per-row provenance on this backend (`defaulted: priority,urgency,size`), and it can do that only
+because absence is observable here. Where nothing is ever absent, that reporting has nothing to
+detect and every row silently claims to be ranked.
+
+## The agent mark
+
+`check-replies` and `backlog-triage` decide *has a human replied* from the last comment
+starting with 🤖. That exists because on GitHub an agent posts under the human's own token,
+so the author distinguishes nothing.
+
+**If your backend posts as a separate user, say so and use the author.** Emulating the mark
+would be reimplementing a workaround for a problem you do not have.

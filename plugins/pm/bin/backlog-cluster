@@ -1,0 +1,147 @@
+#!/bin/sh
+# Issues that want to be one branch, grouped by what they touch.
+#
+#   backlog-cluster                # clusters, biggest first
+#   backlog-cluster --min 3        # only groups of 3 or more (default 2)
+#   backlog-cluster --unkeyed      # the issues that named no file at all
+#   backlog-cluster --repo owner/n
+#
+# Eleven separate branches against one shell script is eleven rebases and eleven
+# reviews of the same file. Measured on one backlog:
+#
+#   one documentation file   16 open issues
+#   one shell script         11
+#   the rules file           11
+#   one test script          10
+#   four more files          6, 6, 6, 5
+#
+# KEYED ON STRUCTURE, NOT TEXT. On that same backlog, ZERO open-issue title
+# pairs exceeded 0.34 token overlap -- titles are written distinctively enough
+# that any lexical similarity tool finds nothing and gets trusted anyway. What
+# actually clusters is the file being touched, so that is the key: a path
+# mentioned in the title or body, normalised with the same slugify() that keys
+# on-disk notes, plus area-* when it is present.
+#
+# The inverse signal matters as much. 33 issues named no file at all, and those
+# were every large design issue -- precisely the ones that starve. --unkeyed
+# lists them rather than dropping them.
+#
+# This is advisory. It prints groups; it does not link, label or close anything.
+#
+# Exit: 0 clusters found · 1 none · 2 could not tell.
+#
+# Seams: BACKLOG_ISSUES_JSON
+
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PM_LIB=$HERE/../lib
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+. "$HERE/../lib/persist.sh"
+
+usage() { sed -n '2,32p' "$0"; exit "${1:-0}"; }
+
+MIN=2; UNKEYED=0; REPO=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --min)     MIN=${2:?}; shift 2 ;;
+    --unkeyed) UNKEYED=1; shift ;;
+    --repo)    REPO=${2:?}; shift 2 ;;
+    -h|--help) usage 0 ;;
+    *) echo "backlog-cluster: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+case "$MIN" in ''|*[!0-9]*) echo "backlog-cluster: --min must be a number" >&2; exit 2 ;; esac
+[ "$MIN" -ge 2 ] || { echo "backlog-cluster: --min below 2 is not a cluster" >&2; exit 2; }
+
+command -v jq >/dev/null || { echo "backlog-cluster: jq is not installed" >&2; exit 2; }
+
+OUTFILE=${TMPDIR:-/tmp}/backlog-cluster.$$.out
+trap 'rm -f "$OUTFILE" 2>/dev/null || :' EXIT INT TERM
+
+if [ -n "${BACKLOG_ISSUES_JSON:-}" ]; then
+  JSON=$(cat "$BACKLOG_ISSUES_JSON") || { echo "backlog-cluster: cannot read $BACKLOG_ISSUES_JSON" >&2; exit 2; }
+else
+  provider_available || { echo "backlog-cluster: $(provider_name) is not available" >&2; exit 2; }
+  JSON=$(provider_issues "$REPO") || { echo "backlog-cluster: could not list issues" >&2; exit 2; }
+fi
+printf '%s' "$JSON" | jq -e . >/dev/null 2>&1 || {
+  echo "backlog-cluster: the issue list did not come back as JSON" >&2; exit 2; }
+
+# number<TAB>path, one line per (issue, path) pair. An issue touching three
+# files belongs to three clusters -- that is the point, since a batch is worth
+# doing precisely when the same file keeps coming back.
+#
+# WHAT COUNTS AS A PATH. Either a token containing a slash, or a dotted
+# filename. Requiring an extension was the first attempt and it was wrong for
+# this repository specifically: every binary here is an extensionless shell
+# script, so plugins/pm/bin/backlog-queue -- the exact case #22 measured as
+# "one shell script, 11 open issues" -- matched nothing at all.
+#
+# A token with a slash and no extension can be an ordinary phrase (and/or).
+# Accepted: this command only prints, and a spurious group costs a glance. The
+# opposite error, silently missing the repository's main file shape, cost a
+# whole feature.
+# Non-capturing (?:...). jq scan() with a CAPTURE group returns arrays instead
+# of strings, and the failure reads as "string and array cannot be added" some
+# way from the regex that caused it.
+PATH_RE="[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+|[A-Za-z0-9_-]+[.][A-Za-z]{1,4}"
+
+TAB=$(printf '\t')
+pairs() {
+  printf '%s' "$JSON" | jq -r --arg re "$PATH_RE" --arg tab "$TAB" '
+    def lbl: [ .labels[]? | (.name // .) ];
+    def keys_of: ( [ ((.title // "") + " " + (.body // "")) | [ scan($re) ] | .[] ]
+                   + [ lbl[] | select(startswith("area-")) ] ) | unique;
+    .[] | select((.state // "OPEN") | ascii_upcase == "OPEN")
+        | . as $i | keys_of | .[]
+        | [ ., ($i.number | tostring), ($i.title // "") ] | join($tab)
+  ' 2>/dev/null
+}
+
+unkeyed() {
+  printf '%s' "$JSON" | jq -r --arg re "$PATH_RE" '
+    def lbl: [ .labels[]? | (.name // .) ];
+    def keys_of: ( [ ((.title // "") + " " + (.body // "")) | [ scan($re) ] | .[] ]
+                   + [ lbl[] | select(startswith("area-")) ] ) | unique;
+    .[] | select((.state // "OPEN") | ascii_upcase == "OPEN")
+        | select((keys_of | length) == 0)
+        | "#\(.number)  \(.title)"
+  ' 2>/dev/null
+}
+
+if [ "$UNKEYED" -eq 1 ]; then
+  OUT=$(unkeyed) || { echo "backlog-cluster: could not scan the issue list" >&2; exit 2; }
+  [ -n "$OUT" ] || { echo "backlog-cluster: every open issue names a file"; exit 1; }
+  echo "named no file -- usually the design issues, and the ones that starve:"
+  printf '%s\n' "$OUT" | sed 's/^/  /'
+  exit 0
+fi
+
+PAIRS=$(pairs) || { echo "backlog-cluster: could not scan the issue list" >&2; exit 2; }
+[ -n "$PAIRS" ] || { echo "backlog-cluster: no open issue names a file"; exit 1; }
+
+# Normalised with the same slugify() that keys on-disk notes, so a cluster key
+# and a note topic are comparable rather than nearly comparable.
+SLUGGED=$(printf '%s\n' "$PAIRS" | while IFS="$TAB" read -r path num title; do
+  [ -n "$path" ] || continue
+  printf '%s%s%s%s%s%s%s\n' "$(slugify "$path")" "$TAB" "$path" "$TAB" "$num" "$TAB" "$title"
+done)
+
+# Counts first, then members. Packing a multi-line member list into one field
+# and reading it back with IFS did not survive the newlines -- the first attempt
+# printed one cluster with the next one folded into its title.
+COUNTS=$(printf '%s\n' "$SLUGGED" | cut -d"$TAB" -f1 | sort | uniq -c | sort -rn)
+
+found=1
+printf '%s\n' "$COUNTS" | while read -r count slug; do
+  [ "$count" -ge "$MIN" ] || continue
+  path=$(printf '%s\n' "$SLUGGED" | awk -F"$TAB" -v s="$slug" '$1==s {print $2; exit}')
+  printf '\n%s  (%s issues, one branch)\n' "$path" "$count"
+  printf '%s\n' "$SLUGGED" | awk -F"$TAB" -v s="$slug" '$1==s {printf "  #%-5s %s\n", $3, $4}'
+done > "$OUTFILE"
+
+if [ -s "$OUTFILE" ]; then cat "$OUTFILE"; exit 0; fi
+echo "backlog-cluster: nothing clusters at --min $MIN"
+exit 1

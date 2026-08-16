@@ -1,0 +1,20 @@
+// Copy this file to firebase-config.js and fill in the values from the Firebase
+// console: Project settings → General → Your apps → Web app → SDK setup.
+//
+// firebase-config.js IS committed, on purpose. None of this is secret -- the
+// Firebase web config ships to every visitor's browser by design, and it only
+// identifies the project. What decides who may read or write is firestore.rules.
+// Keeping it out of git would buy no security and would break CI, which has no
+// other way to build the site.
+//
+// The one value worth double-checking is projectId: pointing a preview build at
+// the wrong project is how test data ends up in production.
+
+window.firebaseConfig = {
+  apiKey: 'REPLACE_ME',
+  authDomain: '__PROJECT_ID__.firebaseapp.com',
+  projectId: '__PROJECT_ID__',
+  storageBucket: '__PROJECT_ID__.firebasestorage.app',
+  messagingSenderId: 'REPLACE_ME',
+  appId: 'REPLACE_ME',
+};

@@ -1,0 +1,19 @@
+{
+  "name": "__APP_SLUG__",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "__APP_NAME__ — a static page on Firebase Hosting with Firestore behind Google Sign-In. Nothing in node_modules is shipped to the browser: the page loads the Firebase SDK from Google's CDN, and these packages exist only to build, test and back up the app.",
+  "scripts": {
+    "build": "node tools/build.mjs",
+    "check": "node tools/check-drift.mjs",
+    "test": "firebase emulators:exec --only firestore --project demo-__APP_SLUG__-rules \"node --test tools/rules-tests/*.test.mjs\"",
+    "backup": "node tools/backup.mjs"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^4.0.1",
+    "firebase": "^11.0.2",
+    "firebase-admin": "^13.0.2",
+    "firebase-tools": "^14.0.0"
+  }
+}

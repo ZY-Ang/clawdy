@@ -1,0 +1,11 @@
+{
+  "name": "mvp-kit",
+  "description": "AI generators build the app. This puts it under CI, tests the security rules they wrote, and sets up backups.",
+  "version": "0.1.0",
+  "author": {
+    "name": "ZY-Ang"
+  },
+  "homepage": "https://github.com/ZY-Ang/clawdy/tree/main/plugins/mvp-kit",
+  "repository": "https://github.com/ZY-Ang/clawdy",
+  "license": "MIT"
+}

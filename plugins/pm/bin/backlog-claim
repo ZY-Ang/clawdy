@@ -1,0 +1,204 @@
+#!/bin/sh
+# Bind an issue to the branch working it, and open the pull request now.
+#
+#   backlog-claim 42                       # branch name from the title
+#   backlog-claim 42 --branch claude/foo
+#   backlog-claim 42 --base main --repo o/n
+#   backlog-claim 42 --force               # a size-l issue, claimed anyway
+#   backlog-claim 42 --dry-run             # say what would happen, touch nothing
+#
+# Three things happen together, and the middle one is the point: the issue gets
+# `claimed`, a branch is created, and a DRAFT PULL REQUEST IS OPENED IMMEDIATELY
+# rather than when the work is finished.
+#
+# With a pull request open from the first commit, a review finding becomes a
+# thread GitHub tracks and resolves. Without one it becomes a top-level issue
+# competing with real work for queue position -- which is how 45 of 117 open
+# issues on one measured backlog came to be findings against unmerged branches.
+#
+# Exit: 0 claimed (or already claimed) · 1 refused · 2 usage, or could not tell.
+#
+# Idempotent by construction. Claiming twice creates neither a second branch nor
+# a second comment: an existing claim is reported and exits 0, because a loop
+# that re-reads its own queue will re-claim, and failing there would be noise.
+#
+# Seams:
+#   BACKLOG_ISSUE_JSON   one issue, provider-shaped, instead of asking
+#   BACKLOG_NOW          a fixed epoch, so the recorded claim time is pinned
+
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PM_LIB=$HERE/../lib
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+. "$HERE/../lib/agent-prefix.sh"
+. "$HERE/../lib/persist.sh"
+
+usage() { sed -n '2,16p' "$0"; exit "${1:-0}"; }
+
+say_backend() {
+  [ -n "${PROVIDER_ERR:-}" ] || return 0
+  printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
+  return 0
+}
+
+NUM=""; BRANCH=""; BASE=""; REPO=""; FORCE=0; DRY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --branch) BRANCH=${2:?}; shift 2 ;;
+    --base)   BASE=${2:?};   shift 2 ;;
+    --repo)   REPO=${2:?};   shift 2 ;;
+    --force)  FORCE=1; shift ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help) usage 0 ;;
+    -*) echo "backlog-claim: unknown option $1" >&2; exit 2 ;;
+    *) [ -z "$NUM" ] || { echo "backlog-claim: one issue at a time" >&2; exit 2; }
+       NUM=$1; shift ;;
+  esac
+done
+
+[ -n "$NUM" ] || { echo "backlog-claim: which issue?" >&2; usage 2; }
+case "$NUM" in ''|*[!0-9]*) echo "backlog-claim: '$NUM' is not an issue number" >&2; exit 2 ;; esac
+command -v jq >/dev/null || { echo "backlog-claim: jq is not installed" >&2; exit 2; }
+command -v git >/dev/null || { echo "backlog-claim: git is not installed" >&2; exit 2; }
+
+# --- the issue ---------------------------------------------------------------
+if [ -n "${BACKLOG_ISSUE_JSON:-}" ]; then
+  ISSUE=$(cat "$BACKLOG_ISSUE_JSON") || { echo "backlog-claim: cannot read $BACKLOG_ISSUE_JSON" >&2; exit 2; }
+else
+  provider_available || { echo "backlog-claim: $(provider_name) is not available" >&2; exit 2; }
+  ISSUE=$(provider_issue "$NUM" "$REPO") || ISSUE=""
+fi
+[ -n "$ISSUE" ] || { echo "backlog-claim: no data for issue $NUM -- refusing to guess" >&2; exit 2; }
+
+# Validate once, here, rather than letting jq's exit code leak out through
+# set -e. Unparseable input exited 5 with a jq parse error on stderr, which is
+# neither this tool's contract nor a message anyone can act on. "Could not tell"
+# is 2, always -- the same rule pr-watch holds.
+printf '%s' "$ISSUE" | jq -e . >/dev/null 2>&1 || {
+  echo "backlog-claim: issue $NUM did not come back as JSON -- refusing to guess" >&2; exit 2; }
+
+TITLE=$(printf '%s' "$ISSUE" | jq -r '.title // empty')
+STATE=$(printf '%s' "$ISSUE" | jq -r '.state // "OPEN"' | tr '[:lower:]' '[:upper:]')
+LABELS=$(printf '%s' "$ISSUE" | jq -r '[.labels[]? | (.name // .)] | join(" ")')
+
+[ -n "$TITLE" ] || { echo "backlog-claim: issue $NUM has no title -- is that the right number?" >&2; exit 2; }
+
+has_label() { case " $LABELS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# --- the refusals, before anything is written --------------------------------
+case "$STATE" in
+  OPEN) ;;
+  *) echo "backlog-claim: issue $NUM is $STATE. Closed work does not need a branch." >&2; exit 1 ;;
+esac
+
+if has_label size-l && [ "$FORCE" -eq 0 ]; then
+  cat >&2 <<MSG
+backlog-claim: issue $NUM is size-l.
+
+A large issue held under one claim is how a branch goes quiet for a week while
+the queue reports it as being worked. Split it into pieces that can each be
+finished, and claim one.
+
+  --force   claim it whole anyway
+MSG
+  exit 1
+fi
+
+if has_label needs-human; then
+  echo "backlog-claim: issue $NUM is needs-human. Answer it first -- check-replies says whether it is." >&2
+  exit 1
+fi
+
+[ -n "$BRANCH" ] || BRANCH="claude/$(slugify "$TITLE")"
+case "$BRANCH" in
+  */) echo "backlog-claim: '$BRANCH' ends in a slash" >&2; exit 2 ;;
+  *' '*|*'..'*|*'~'*|*'^'*|*':'*) echo "backlog-claim: '$BRANCH' is not a usable branch name" >&2; exit 2 ;;
+esac
+
+[ -n "$BASE" ] || BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||') || true
+[ -n "$BASE" ] || BASE=main
+
+NOW=${BACKLOG_NOW:-$(date -u +%s)}
+STAMP=$(date -u -d "@$NOW" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -r "$NOW" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "$NOW")
+
+# --- dry run, before anything is asked of the backend ------------------------
+# Inert means inert. A read-only call is still a call, and a --dry-run that
+# reaches the network cannot be used to check what a command would do while the
+# backend is down -- which is when it is most wanted.
+if [ "$DRY" -eq 1 ]; then
+  if has_label claimed; then
+    echo "would do nothing: #$NUM is already claimed"
+  else
+    echo "would claim #$NUM"
+    echo "  branch  $BRANCH  (from $BASE)"
+    echo "  label   claimed"
+    echo "  pr      draft, opened now"
+  fi
+  exit 0
+fi
+
+# --- already claimed? --------------------------------------------------------
+# Reported, not refused. A loop re-reading its queue will re-claim, and treating
+# that as an error trains it to ignore the exit code.
+EXISTING_PR=$(provider_find_pr "$BRANCH" "$REPO" 2>/dev/null || true)
+
+if has_label claimed; then
+  echo "already claimed: #$NUM -> $BRANCH${EXISTING_PR:+  (PR #$EXISTING_PR)}"
+  exit 0
+fi
+
+# --- do it, PR first ---------------------------------------------------------
+# Order matters. The branch and the pull request are what make findings
+# reviewable; the label is bookkeeping. If the label lands and the PR does not,
+# the queue hides an issue that nothing is actually working.
+if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+  git checkout -q "$BRANCH"
+else
+  git checkout -q -b "$BRANCH" 2>/dev/null || {
+    echo "backlog-claim: could not create branch $BRANCH" >&2; exit 2; }
+fi
+
+# A branch with no commits cannot carry a pull request, so the claim itself is
+# the first commit. It also leaves the binding in git history, where it survives
+# the issue being edited.
+if [ -z "$EXISTING_PR" ]; then
+  git commit -q --allow-empty -m "claim #$NUM: $TITLE" \
+    -m "Claimed at $STAMP. Closes #$NUM." || {
+    echo "backlog-claim: could not record the claim commit" >&2; exit 2; }
+
+  git push -q -u origin "$BRANCH" 2>/dev/null || {
+    echo "backlog-claim: could not push $BRANCH" >&2; exit 2; }
+
+  PR_BODY=$(agent_prefix "Claiming #$NUM.
+
+Draft opened at branch-creation time, deliberately: a review finding against
+this work should become a thread on this pull request, not another open issue
+competing for queue position.
+
+Closes #$NUM.")
+  PR_URL=$(provider_open_draft_pr "$BRANCH" "$TITLE" "$PR_BODY" "$BASE" "$REPO") || PR_URL=""
+  [ -n "$PR_URL" ] || { echo "backlog-claim: branch pushed but the draft PR was not created" >&2; say_backend; exit 2; }
+else
+  PR_URL="#$EXISTING_PR"
+fi
+
+provider_comment "$NUM" "$(agent_prefix "Claimed -> \`$BRANCH\` (from \`$BASE\`) at $STAMP.
+
+$PR_URL")" "$REPO" || echo "backlog-claim: claimed, but the comment did not post" >&2
+
+# `claimed` is written by this tool and never by hand, and a label the repo
+# does not have cannot be added -- the first claim in a fresh repo failed after
+# the branch and PR already existed (#64). Ensure it, like file-issue ensures
+# its own labels.
+provider_ensure_label claimed "$REPO"
+
+provider_label "$NUM" claimed add "$REPO" || {
+  echo "backlog-claim: branch and PR exist, but the 'claimed' label did not stick." >&2
+  say_backend
+  echo "backlog-claim: the queue will offer this issue again. Add it by hand." >&2
+  exit 2; }
+
+echo "claimed #$NUM -> $BRANCH"
+echo "  $PR_URL"

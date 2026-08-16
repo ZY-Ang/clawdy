@@ -1,0 +1,118 @@
+#!/bin/sh
+# Which questions has a human answered? Run this every tick, before picking up
+# work.
+#
+#   check-replies                 # answered questions, newest first
+#   check-replies --repo o/n
+#   check-replies --all           # every needs-human issue, answered or not
+#   check-replies --quiet         # just the numbers, for scripting
+#
+# A `needs-human` issue is blocked only while it is unanswered. The moment a
+# person replies it is ordinary work again -- and it stays invisible if the loop
+# filters on the label alone, because nobody remembers to strip the label. That
+# wastes the whole round trip the question cost, which is the expensive part.
+#
+# "Has a human replied?" is decided by the agent mark. Everything the tools here
+# post starts with it, so the last comment lacking it was written by a person.
+# The author cannot be used for this: on GitHub an agent posts through the
+# human's own token, so every comment carries the same author name.
+#
+# Exit: 0 something is answered and workable · 1 nothing is · 2 could not tell.
+#
+# Requires: gh (authenticated) and jq.
+
+set -eu
+
+LIB=$(CDPATH= cd -- "$(dirname -- "$0")/../lib" && pwd)
+. "$LIB/agent-prefix.sh"
+PM_LIB=$LIB
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+
+# The mark was hardcoded here as a second copy of AGENT_MARK. Whether a human
+# has replied is decided by this one character, and two definitions of it is
+# two answers to that question the day one of them changes.
+MARK=$AGENT_MARK
+REPO=""; ALL=0; QUIET=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo) REPO=$2; shift 2 ;;
+    --all) ALL=1; shift ;;
+    --quiet|-q) QUIET=1; shift ;;
+    -h|--help) sed -n '2,21p' "$0"; exit 0 ;;
+    *) echo "check-replies: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+command -v jq >/dev/null || { echo "check-replies: jq is not installed" >&2; exit 2; }
+if [ -z "${CHECK_REPLIES_JSON:-}" ]; then
+  provider_available || { echo "check-replies: $(provider_name) is not available" >&2; exit 2; }
+fi
+
+# Test seam: CHECK_REPLIES_JSON stands in for the API, so the "who spoke last"
+# logic can be exercised without a network or a repo full of fixtures.
+fetch() {
+  if [ -n "${CHECK_REPLIES_JSON:-}" ]; then cat "$CHECK_REPLIES_JSON"; return 0; fi
+  provider_needs_human "$REPO"
+}
+
+JSON=$(fetch) || { echo "check-replies: could not list issues" >&2; exit 2; }
+[ -n "$JSON" ] || { echo "check-replies: no data returned" >&2; exit 2; }
+
+# An issue is answered when its LAST comment is unmarked. Not "any unmarked
+# comment": the agent may have replied after the human, asking for more, in
+# which case the ball is back with the person and the issue is still blocked.
+SUMMARY=$(printf '%s' "$JSON" | jq -r --arg mark "$MARK" '
+  [ .[]
+    | . as $i
+    | (($i.comments // []) | last) as $last
+    | {
+        number: $i.number,
+        title:  ($i.title // ""),
+        n:      (($i.comments // []) | length),
+        answered: (
+          if $last == null then false
+          else ($last.body // "") | startswith($mark) | not
+          end
+        ),
+        who: (($last.author.login) // "-")
+      }
+  ] | sort_by(-.number)
+  | .[] | [ (.answered|tostring), (.number|tostring), .n, .who, .title ] | @tsv
+' 2>/dev/null) || { echo "check-replies: could not parse the issue list" >&2; exit 2; }
+
+found=0
+printed=0
+# Tab-separated and read with `read`, so a title with spaces survives intact.
+echo "$SUMMARY" | while IFS='	' read -r answered number n who title; do
+  [ -n "${number:-}" ] || continue
+  if [ "$answered" = "true" ]; then
+    found=1
+    if [ "$QUIET" -eq 1 ]; then echo "$number"
+    else printf 'ANSWERED  #%-5s %s\n          last by %s, %s comment(s) — pick this up\n' \
+           "$number" "$title" "$who" "$n"; fi
+  elif [ "$ALL" -eq 1 ] && [ "$QUIET" -eq 0 ]; then
+    if [ "$n" = "0" ]; then
+      printf 'waiting   #%-5s %s\n          no replies yet\n' "$number" "$title"
+    else
+      printf 'waiting   #%-5s %s\n          last word was the agent'"'"'s — still on the human\n' \
+        "$number" "$title"
+    fi
+  fi
+  printed=$((printed + 1))
+done
+
+# The while loop runs in a subshell, so its `found` never reaches here. Recompute
+# rather than reach for a shell that supports lastpipe.
+ANSWERED_COUNT=$(printf '%s' "$SUMMARY" | awk -F'\t' '$1=="true"' | grep -c . || true)
+[ -z "$ANSWERED_COUNT" ] && ANSWERED_COUNT=0
+
+if [ "$QUIET" -eq 0 ]; then
+  TOTAL=$(printf '%s' "$SUMMARY" | grep -c . || true)
+  [ -z "$TOTAL" ] && TOTAL=0
+  if [ "$ANSWERED_COUNT" -eq 0 ]; then
+    echo "Nothing answered. $TOTAL needs-human issue(s) still waiting on a person."
+  fi
+fi
+
+[ "$ANSWERED_COUNT" -gt 0 ]

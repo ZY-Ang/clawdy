@@ -1,0 +1,81 @@
+# Ships the live site, and the access control that protects it, on every merge.
+#
+# Two deploys, in this order and in this job: the site, then firestore.rules.
+# The rules deploy is the part that generated tooling leaves out, and leaving it
+# out is how the rules file in a repo and the rules a project actually enforces
+# drift apart -- someone edits the file, nobody deploys it, and the app is
+# protected by whatever was last pasted into the console months ago.
+#
+# The checks are repeated here rather than trusted from the pull request.
+# Branch protection needs a paid plan on a private repo, so nothing physically
+# stops a push straight to main; this is the last gate before the live site, not
+# a duplicate of pr.yml.
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      # The nightly backup commits here. Redeploying an unchanged site because a
+      # data snapshot landed would burn Actions minutes and make the deploy
+      # history unreadable -- every real deploy buried under a month of backups.
+      - 'backups/**'
+  # Manual re-run. Adding someone to the allow-list is the change most likely to
+  # be urgent -- somebody locked out while they need the app -- and it would
+  # otherwise be held behind anything that made the suite red, including a
+  # network blip. This ships rules without inventing a commit.
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - run: npm ci
+
+      - name: Check for drift
+        run: npm run check
+
+      - run: npm run build
+
+      - name: Security rules
+        run: npm test
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.__SA_SECRET__ }}
+          channelId: live
+          projectId: __PROJECT_ID__
+
+      # action-hosting-deploy only does Hosting, so the rules go out with the
+      # CLI. This needs the Firebase Rules Admin role on the deploy service
+      # account -- if this step 403s, that missing role is why.
+      #
+      # The credentials are written to a file because the CLI wants a path, and
+      # removed immediately after. RUNNER_TEMP is outside the workspace, so a
+      # later step cannot sweep it into an artifact.
+      - name: Deploy Firestore rules
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.__SA_SECRET__ }}
+        run: |
+          set -euo pipefail
+          trap 'rm -f "$RUNNER_TEMP/sa.json"' EXIT
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$RUNNER_TEMP/sa.json"
+          export GOOGLE_APPLICATION_CREDENTIALS="$RUNNER_TEMP/sa.json"
+          npx --no-install firebase deploy \
+            --only firestore:rules \
+            --project __PROJECT_ID__ \
+            --non-interactive

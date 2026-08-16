@@ -1,0 +1,84 @@
+#!/bin/sh
+# Open or close the window in which AskUserQuestion is permitted -- for THIS
+# session only.
+#
+#   interview-window open     # before an interview the user started
+#   interview-window close    # the moment it ends
+#   interview-window status   # this session, and any other session's window
+#
+# Opening stamps a file named after the session. The guard allows inline
+# questions only while that session's file is fresh -- 30 minutes by default,
+# CLAUDE_INTERVIEW_WINDOW_MINUTES to change.
+#
+# Per session, not per user. A single shared window meant one agent opening an
+# interview granted every other agent on the machine permission to interrupt,
+# and its `close` revoked a window someone else was relying on. Two agents
+# working towards two different north stars is the ordinary case, not an
+# exotic one.
+#
+# It expires on its own on purpose. A permission that has to be revoked is a
+# permission left on, and this one being left on silently disables the rule it
+# exists to make room for.
+
+set -eu
+
+WINDOW_DIR=${CLAUDE_INTERVIEW_WINDOW_DIR:-$HOME/.claude/interview-windows}
+MINS=${CLAUDE_INTERVIEW_WINDOW_MINUTES:-30}
+
+# The hook reads .session_id from the JSON on its stdin; this reads the same
+# value from the environment. They agree -- both name the session whose
+# transcript is <id>.jsonl.
+SID=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}
+
+# The pre-session-scoping global stamp. Left in place it would be read by
+# nothing and mean nothing, while looking exactly like an open window.
+LEGACY="$HOME/.claude/.interview-window"
+[ -f "$LEGACY" ] && rm -f "$LEGACY" && echo "removed the old shared window stamp; windows are per-session now" >&2
+
+fresh() { [ -f "$1" ] && [ -n "$(find "$1" -mmin "-$MINS" 2>/dev/null)" ]; }
+
+need_sid() {
+  [ -n "$SID" ] && return 0
+  echo "interview-window: no session id (CLAUDE_CODE_SESSION_ID unset), so a window" >&2
+  echo "  cannot be scoped to this session. Refusing rather than opening one that" >&2
+  echo "  the guard will not read -- an interview that silently has no window is" >&2
+  echo "  worse than no interview, because nothing reports it." >&2
+  exit 2
+}
+
+case "${1:-status}" in
+  open)
+    need_sid
+    mkdir -p "$WINDOW_DIR"
+    date > "$WINDOW_DIR/$SID"
+    echo "Interview window open for ${MINS}m, for session $SID only."
+    echo "Other sessions are unaffected. Close it as soon as the interview ends:"
+    echo "  interview-window close"
+    ;;
+  close)
+    need_sid
+    rm -f "$WINDOW_DIR/$SID"
+    echo "Interview window closed for this session. No interruptions from here."
+    ;;
+  status)
+    if [ -n "$SID" ] && fresh "$WINDOW_DIR/$SID"; then
+      echo "this session ($SID): open since $(cat "$WINDOW_DIR/$SID")"
+    else
+      echo "this session (${SID:-unknown}): closed"
+    fi
+    # Other sessions are listed rather than hidden: when two agents are running,
+    # knowing the other one is mid-interview explains a lot.
+    others=0
+    if [ -d "$WINDOW_DIR" ]; then
+      for f in "$WINDOW_DIR"/*; do
+        [ -f "$f" ] || continue
+        [ "$(basename "$f")" = "$SID" ] && continue
+        fresh "$f" || continue
+        others=$((others + 1))
+        echo "  other session $(basename "$f"): open"
+      done
+    fi
+    [ "$others" -eq 0 ] && echo "  no other session has one open"
+    ;;
+  *) echo "usage: interview-window open|close|status" >&2; exit 2 ;;
+esac

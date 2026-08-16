@@ -1,0 +1,11 @@
+{
+  "name": "north-star",
+  "description": "Agree a goal with a human, write it down, get it approved, then work towards it unattended on a heartbeat — using the issue tracker as the job queue and stopping when the goal is provably met.",
+  "version": "0.3.0",
+  "author": {
+    "name": "ZY-Ang"
+  },
+  "homepage": "https://github.com/ZY-Ang/clawdy/tree/main/plugins/north-star",
+  "repository": "https://github.com/ZY-Ang/clawdy",
+  "license": "MIT"
+}

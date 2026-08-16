@@ -1,0 +1,21 @@
+{
+  "description": "Refuse to end a turn that asks permission for implied work, or that announces work instead of doing it.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/no-permission-asking",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/no-announced-work",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "name": "clawdy",
+  "owner": {
+    "name": "ZY-Ang",
+    "url": "https://github.com/ZY-Ang"
+  },
+  "description": "Claude Code plugins worth open-sourcing. Small, opinionated tools that do one job.",
+  "plugins": [
+    {
+      "name": "mvp-kit",
+      "source": "./plugins/mvp-kit",
+      "description": "AI generators build the app. This puts it under CI, tests the security rules they wrote, and sets up backups."
+    },
+    {
+      "name": "adhd",
+      "source": "./plugins/adhd",
+      "description": "Shape every reply for a reader with ADHD and explain it like they are new to the topic: next action first, numbered steps, zero jargon, and never cutting the context needed to understand it."
+    },
+    {
+      "name": "handoff",
+      "source": "./plugins/handoff",
+      "description": "Write a handoff document that lets a fresh session resume work without re-discovering context, with failed attempts recorded so nobody walks the same dead end twice."
+    },
+    {
+      "name": "statusline",
+      "source": "./plugins/statusline",
+      "description": "Statusline showing model, context use and token counts — with cost shown on Bedrock and DeepSeek, where you are actually billed per token."
+    },
+    {
+      "name": "devloop",
+      "source": "./plugins/devloop",
+      "description": "Work a GitHub backlog unattended without stalling: prove a PR is actually mergeable before asking for review, poll for CI success because it is never evented, and reply to review threads only after the fix is pushed."
+    },
+    {
+      "name": "opinionated-claude",
+      "source": "./plugins/opinionated-claude",
+      "description": "Install working conventions into your CLAUDE.md: act autonomously instead of asking permission to push, keep private infrastructure detail out of public repositories, keep changes surgical, and never claim something is verified without evidence."
+    },
+    {
+      "name": "issues",
+      "source": "./plugins/issues",
+      "description": "Deprecated — merged into `pm`. Install `pm` and uninstall this; the commands no longer ship here."
+    },
+    {
+      "name": "north-star",
+      "source": "./plugins/north-star",
+      "description": "Agree a goal with a human, write it down, get it approved, then work towards it unattended on a heartbeat — using the issue tracker as the job queue and stopping when the goal is provably met."
+    },
+    {
+      "name": "pm",
+      "source": "./plugins/pm",
+      "description": "Project management for an unattended loop: file work and ask questions without blocking, then order what comes back — a deterministic queue by severity, priority and how much each item unblocks."
+    }
+  ]
+}

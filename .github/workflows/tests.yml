@@ -1,0 +1,65 @@
+# Every plugin's test suite, on every push and pull request.
+#
+# This repository ships CI templates for the repositories it generates and had
+# none of its own -- eleven suites that ran only when someone remembered to. It
+# also ships `pr-watch`, which reads a pull request's check status to decide
+# whether it is ready; with no checks at all, that tool cannot be dogfooded here.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # This job's name is the string that appears in the required-status-checks
+  # list, so it is named for what it proves rather than what it runs in. "sh"
+  # told a reader nothing at the one moment it is read.
+  suite:
+    name: suite
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The version guard diffs against the base branch, which needs history.
+          fetch-depth: 0
+
+      # Four suites refuse to run when a real `gh` is on PATH, because they fake
+      # it and a live binary would reach the network with the fixtures' repo
+      # names. Hosted runners preinstall `gh`, so it has to go. The runner is
+      # ephemeral; nothing else here wants it.
+      - name: Remove the preinstalled gh, which the fixtures must shadow
+        run: |
+          sudo rm -f "$(command -v gh || true)"
+          ! command -v gh
+
+      # Runs before the suites: a missing version bump is a shipping defect, and
+      # finding it after five minutes of tests is five minutes wasted.
+      - name: A plugin whose shipped files changed must change its version
+        if: github.event_name == 'pull_request'
+        run: |
+          git fetch --no-tags origin "${{ github.base_ref }}"
+          sh .github/bin/require-version-bump "$(git merge-base HEAD FETCH_HEAD)"
+
+      - name: Check every script parses under dash, not just bash
+        run: |
+          fail=0
+          for f in plugins/*/bin/* plugins/*/hooks/* plugins/*/lib/*.sh plugins/*/tests/*.test.sh .github/bin/*; do
+            case "$f" in *.json) continue ;; esac
+            [ -f "$f" ] || continue
+            dash -n "$f" || { echo "dash -n failed: $f"; fail=1; }
+          done
+          exit $fail
+
+      - name: Run every suite
+        run: |
+          fail=0
+          for t in plugins/*/tests/*.test.sh .github/bin/*.test.sh; do
+            [ -f "$t" ] || continue
+            echo "== $t"
+            sh "$t" || fail=1
+          done
+          exit $fail

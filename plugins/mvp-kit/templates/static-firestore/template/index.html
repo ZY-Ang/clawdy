@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__APP_NAME__</title>
+<style>
+  :root { color-scheme: light dark; --gap: 1rem; }
+  body {
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    margin: 0; padding: var(--gap);
+    max-width: 42rem; margin-inline: auto;
+  }
+  header { display: flex; align-items: baseline; gap: var(--gap); flex-wrap: wrap; }
+  h1 { font-size: 1.25rem; margin: 0; flex: 1; }
+  button { font: inherit; padding: .5em 1em; border-radius: .4em; cursor: pointer; }
+  textarea { width: 100%; min-height: 12rem; font: inherit; padding: .5em; box-sizing: border-box; }
+  #status { min-height: 1.5em; font-size: .875rem; opacity: .8; }
+  #status[data-tone="error"] { opacity: 1; font-weight: 600; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>__APP_NAME__</h1>
+  <span id="who"></span>
+  <button id="signin">Sign in with Google</button>
+  <button id="signout" class="hidden">Sign out</button>
+</header>
+
+<main id="app" class="hidden">
+  <p><label for="notes">Shared notes</label></p>
+  <textarea id="notes" aria-describedby="status"></textarea>
+  <p><button id="save">Save</button></p>
+</main>
+
+<p id="status" role="status" aria-live="polite"></p>
+
+<!--
+  The Firebase web config. Not a secret: it identifies the project and ships to
+  every visitor by design. What decides who may read or write is firestore.rules.
+-->
+<script src="./firebase-config.js"></script>
+
+<script type="module">
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-app.js';
+import {
+  getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged,
+} from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-auth.js';
+import {
+  getFirestore, doc, getDoc, setDoc,
+} from 'https://www.gstatic.com/firebasejs/11.0.2/firebase-firestore.js';
+
+const $ = (id) => document.getElementById(id);
+const status = $('status');
+
+function say(message, tone = 'info') {
+  status.textContent = message;
+  status.dataset.tone = tone;
+}
+
+if (!window.firebaseConfig) {
+  say('firebase-config.js is missing. Copy firebase-config.js.example over it.', 'error');
+  throw new Error('no firebaseConfig');
+}
+
+const app = initializeApp(window.firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+const stateRef = doc(db, 'app', 'state');
+
+// The version this browser last saw. Every save claims exactly one past it, and
+// the security rules reject the write if the stored document has moved on --
+// which is how a phone that has been asleep finds out it is stale instead of
+// overwriting whatever happened while it slept. The check that matters lives in
+// firestore.rules; this variable only lets the app react to the refusal.
+let seenVersion = null;
+
+async function load() {
+  const snap = await getDoc(stateRef);
+  if (snap.exists()) {
+    const data = snap.data();
+    seenVersion = data.version ?? 0;
+    $('notes').value = data.notes ?? '';
+    say(`Loaded (version ${seenVersion}).`);
+  } else {
+    seenVersion = 0;
+    $('notes').value = '';
+    say('Empty — nothing saved yet.');
+  }
+}
+
+async function save() {
+  $('save').disabled = true;
+  try {
+    await setDoc(stateRef, {
+      version: seenVersion + 1,
+      notes: $('notes').value,
+      savedAt: new Date().toISOString(),
+      savedBy: auth.currentUser?.email ?? null,
+    });
+    seenVersion += 1;
+    say(`Saved (version ${seenVersion}).`);
+  } catch (err) {
+    // permission-denied here is almost always the version guard, not access:
+    // this browser was signed in a moment ago. Someone else saved in between.
+    if (err?.code === 'permission-denied') {
+      say('Someone else saved while you were editing. Reloading their version — copy your text somewhere first.', 'error');
+      await load();
+    } else {
+      say(`Save failed: ${err?.message ?? err}`, 'error');
+    }
+  } finally {
+    $('save').disabled = false;
+  }
+}
+
+$('signin').addEventListener('click', async () => {
+  try {
+    await signInWithPopup(auth, new GoogleAuthProvider());
+  } catch (err) {
+    say(`Sign-in failed: ${err?.message ?? err}`, 'error');
+  }
+});
+$('signout').addEventListener('click', () => signOut(auth));
+$('save').addEventListener('click', save);
+
+onAuthStateChanged(auth, async (user) => {
+  const signedIn = Boolean(user);
+  $('signin').classList.toggle('hidden', signedIn);
+  $('signout').classList.toggle('hidden', !signedIn);
+  $('app').classList.toggle('hidden', !signedIn);
+  $('who').textContent = user?.email ?? '';
+
+  if (!signedIn) {
+    say('Signed out.');
+    return;
+  }
+  try {
+    await load();
+  } catch (err) {
+    // Signed in to Google, refused by Firestore: the address is not on the
+    // allow-list in firestore.rules. Say that plainly rather than showing a raw
+    // permission error, because it is the expected outcome for a stranger.
+    if (err?.code === 'permission-denied') {
+      say('That account does not have access to this app.', 'error');
+    } else {
+      say(`Could not load: ${err?.message ?? err}`, 'error');
+    }
+  }
+});
+</script>
+</body>
+</html>

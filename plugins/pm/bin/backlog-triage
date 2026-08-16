@@ -1,0 +1,157 @@
+#!/bin/sh
+# What is wrong with the backlog itself, rather than what to work on next.
+#
+#   backlog-triage                 # every check, grouped
+#   backlog-triage --only cycles
+#   backlog-triage --quiet         # counts only, for a loop tick
+#   backlog-triage --repo owner/n
+#
+# backlog-queue answers "what next" and is deliberately silent about the state
+# of the list it ranks. A backlog can produce a confident order and still be
+# unusable: cycles that cannot be built in any sequence, claims nothing is
+# working, issues with no axes so the order is flat, and needs-human wrong in
+# both directions at once.
+#
+# Five checks. Each was measured on a real backlog, not imagined:
+#
+#   cycles       7 found, 3 real and blocking
+#   stale        a claim with no commit for STALE_HOURS (default 24)
+#   axes         0 of 118 issues carried a priority
+#   human        2 answered issues still labelled, 9 needing it unlabelled
+#   orphans      45 findings against branches with no pull request
+#
+# Exit: 0 nothing wrong · 1 something to fix · 2 could not tell.
+# A cycle always means 1: an order that silently picks one side of it is an
+# order that cannot be built in the sequence it gives.
+#
+# Seams:
+#   BACKLOG_ISSUES_JSON   issues, provider-shaped
+#   BACKLOG_DEPS_JSON     the dependency graph, replacing whatever the issues carry
+#   BACKLOG_NOW           a fixed epoch
+#   STALE_HOURS           how long a claim may go quiet (default 24)
+
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PM_LIB=$HERE/../lib
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+. "$HERE/../lib/deps.sh"
+. "$HERE/../lib/agent-prefix.sh"
+
+usage() { sed -n '2,31p' "$0"; exit "${1:-0}"; }
+
+ONLY=""; QUIET=0; REPO=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --only)  ONLY=${2:?}; shift 2 ;;
+    --quiet) QUIET=1; shift ;;
+    --repo)  REPO=${2:?}; shift 2 ;;
+    -h|--help) usage 0 ;;
+    *) echo "backlog-triage: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+case "$ONLY" in
+  ''|cycles|stale|axes|human|orphans) ;;
+  *) echo "backlog-triage: --only must be one of: cycles stale axes human orphans" >&2; exit 2 ;;
+esac
+
+command -v jq >/dev/null || { echo "backlog-triage: jq is not installed" >&2; exit 2; }
+
+NOW=${BACKLOG_NOW:-$(date -u +%s)}
+STALE=${STALE_HOURS:-24}
+[ "$STALE" -ge 1 ] 2>/dev/null || { echo "backlog-triage: STALE_HOURS must be >= 1" >&2; exit 2; }
+
+if [ -n "${BACKLOG_ISSUES_JSON:-}" ]; then
+  JSON=$(cat "$BACKLOG_ISSUES_JSON") || { echo "backlog-triage: cannot read $BACKLOG_ISSUES_JSON" >&2; exit 2; }
+else
+  provider_available || { echo "backlog-triage: $(provider_name) is not available" >&2; exit 2; }
+  JSON=$(provider_issues "$REPO") || { echo "backlog-triage: could not list issues" >&2; exit 2; }
+fi
+printf '%s' "$JSON" | jq -e . >/dev/null 2>&1 || {
+  echo "backlog-triage: the issue list did not come back as JSON" >&2; exit 2; }
+
+want() { [ -z "$ONLY" ] || [ "$ONLY" = "$1" ]; }
+
+found=0
+report() {
+  found=1
+  [ "$QUIET" -eq 1 ] && return 0
+  printf '\n%s\n' "$1"
+  shift
+  printf '%s\n' "$@" | sed 's/^/  /'
+  return 0
+}
+
+# --- cycles ------------------------------------------------------------------
+CYC=""
+if want cycles; then
+  DEPS=$(deps_normalise "$JSON") || { echo "backlog-triage: could not read the dependency graph" >&2; exit 2; }
+  CYC=$(deps_cycles "$DEPS")
+  [ -n "$CYC" ] && report "cycles ($(printf '%s\n' "$CYC" | wc -l | tr -d ' ')) -- neither end can be built first" "$CYC"
+fi
+
+# --- everything else comes from one jq pass ----------------------------------
+# Splitting these across passes means re-deriving the label set five times, and
+# a label read five ways is five slightly different definitions.
+scan() {
+  printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson stale "$STALE" --arg mark "$AGENT_MARK" '
+    def lbl: [ .labels[]? | (.name // .) ];
+    def has($l): lbl | index($l) != null;
+    def age: ((.updatedAt // .createdAt // "1970-01-01T00:00:00Z")
+              | fromdateiso8601? // 0) as $t | (($now - $t) / 3600);
+    # The last comment being agent-marked means the ball is still with the
+    # human. This is the verdict check-replies computes; it is read the same way
+    # here rather than invented a second time.
+    def agent_last: (.comments // []) | if length == 0 then true
+                    else (.[-1].body // "") | startswith($mark) end;
+
+    .[] | select((.state // "OPEN") | ascii_upcase == "OPEN") |
+      if   $ARGS.named.check == "stale"
+      then select(has("claimed") and (age > $stale))
+           | "#\(.number)  claimed, quiet for \(age | floor)h  \(.title)"
+      elif $ARGS.named.check == "axes"
+      then select((has("needs-human") | not)
+                  and ((lbl | map(select(startswith("priority-"))) | length) == 0
+                       or (lbl | map(select(startswith("urgency-"))) | length) == 0
+                       or (lbl | map(select(startswith("size-"))) | length) == 0))
+           | "#\(.number)  missing \([ (if (lbl | map(select(startswith("priority-"))) | length) == 0 then "priority" else empty end),
+                                       (if (lbl | map(select(startswith("urgency-")))  | length) == 0 then "urgency"  else empty end),
+                                       (if (lbl | map(select(startswith("size-")))     | length) == 0 then "size"     else empty end) ] | join(", "))  \(.title)"
+      elif $ARGS.named.check == "human-stuck"
+      then select(has("needs-human") and (agent_last | not))
+           | "#\(.number)  answered, still labelled needs-human  \(.title)"
+      elif $ARGS.named.check == "orphans"
+      then select(has("finding") and ((.blockedBy // [] | length) == 0)
+                  and (((.parent // null) == null)))
+           | "#\(.number)  finding with no parent issue  \(.title)"
+      else empty end
+  ' --arg check "$1" 2>/dev/null
+}
+
+if want stale; then
+  OUT=$(scan stale); [ -n "$OUT" ] && report "stale claims -- a branch nothing has touched for ${STALE}h" "$OUT"
+fi
+if want axes; then
+  OUT=$(scan axes)
+  if [ -n "$OUT" ]; then
+    n=$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')
+    report "unranked ($n) -- these tie on every key and fall through to issue number, which is arrival order" "$OUT"
+  fi
+fi
+if want human; then
+  OUT=$(scan human-stuck)
+  [ -n "$OUT" ] && report "answered but still blocked -- the label outlived the answer" "$OUT"
+fi
+if want orphans; then
+  OUT=$(scan orphans)
+  [ -n "$OUT" ] && report "findings with no home -- these compete with real work for queue position" "$OUT"
+fi
+
+if [ "$found" -eq 0 ]; then
+  [ "$QUIET" -eq 1 ] || echo "backlog-triage: nothing to fix"
+  exit 0
+fi
+[ "$QUIET" -eq 1 ] && echo "backlog-triage: issues found"
+exit 1

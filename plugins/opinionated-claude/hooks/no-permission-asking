@@ -1,0 +1,144 @@
+#!/bin/sh
+# Stop hook: refuse to end a turn that asks permission for work already implied.
+#
+# The Autonomy convention says do the work and report what you did. Prose alone
+# did not hold it -- across one long session the agent that WROTE that rule
+# ended turn after turn with "Want me to...?", including in the message
+# announcing a fix for agents asking too much.
+#
+# The interrupt guard cannot catch this. It blocks the AskUserQuestion TOOL, and
+# a question written as ordinary prose is not a tool call. The hole in that
+# guard is exactly the width of a sentence.
+#
+# A Stop hook can, because the check is mechanical: did the final message end by
+# requesting sign-off? That is a string match. It is deliberately not the same
+# judgement as "did this message answer the question", which is why a Stop hook
+# is right here and wrong there.
+#
+# Exit 2 blocks the turn and returns stderr to the model, which then does the
+# thing instead of asking about it.
+#
+# Escape: CLAUDE_ALLOW_ASKING=1 for the genuine case -- something irreversible,
+# or outside what was asked for. Per command, never exported.
+
+INPUT=$(cat 2>/dev/null || true)
+
+case "${CLAUDE_ALLOW_ASKING:-}" in 1|true) exit 0 ;; esac
+
+field() { printf '%s' "$INPUT" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1; }
+
+# Without this a blocked turn could be blocked again forever.
+case "$INPUT" in *'"stop_hook_active": true'*|*'"stop_hook_active":true'*) exit 0 ;; esac
+
+TRANSCRIPT=$(field transcript_path)
+[ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
+
+# The last assistant message, as plain text. jq when present; without it the
+# guard stands down rather than guessing at JSON with a regex.
+command -v jq >/dev/null 2>&1 || exit 0
+LAST=$(jq -rs '
+  [ .[]
+    | select(.type == "assistant")
+    | .message.content
+    | if type == "array" then map(select(.type == "text") | .text) | join("\n") else . end
+  ] | last // ""
+' "$TRANSCRIPT" 2>/dev/null) || exit 0
+[ -n "$LAST" ] || exit 0
+
+# Only the closing lines, and only lines that are actually asking. A
+# retrospective that DISCUSSES asking -- "want me to is the phrase I keep
+# reaching for" -- is not itself asking, and blocking that would make the guard
+# impossible to write about.
+#
+# Ten lines, not three. Three was the tell "the ask is always last" taken too
+# literally: it holds for the SENTENCE, not for the line. A hand-back followed
+# by a numbered list of next steps, or by two lines of sign-off, sits four or
+# five lines from the end and sailed straight through -- which is why the guard
+# looked intermittent rather than broken. It caught "say the word" as a closing
+# line and missed the identical sentence with a list after it.
+#
+# The cost is that a retrospective mentioning these phrases within its final ten
+# lines now trips. That was already true at three; ten makes it likelier.
+# CLAUDE_ALLOW_ASKING=1 is the out, and it is the right shape for a message
+# deliberately written about the guard.
+TAIL=$(printf '%s' "$LAST" | grep -v '^[[:space:]]*$' | tail -10 | tr 'A-Z' 'a-z')
+
+hit=""
+
+# Question forms count when the "?" falls AFTER the phrase. Anchoring on the end
+# of the line was too strict: a message that asks and then closes with a
+# statement -- "Want me to build the flip now: ...? Or soak sbx a while first --
+# your call." -- ends in "." and sailed straight through. Requiring the mark
+# after the phrase keeps the retrospective exemption, because "want me to is the
+# phrase I keep reaching for" has no "?" following it.
+while IFS= read -r line; do
+  for pat in 'want me to' 'shall i ' 'should i ' 'would you like me to' \
+             'do you want me to' 'want that' 'want me building' ; do
+    case "$line" in *"$pat"*'?'*) hit=$pat; break ;; esac
+  done
+  [ -n "$hit" ] && break
+done <<TAILEOF
+$TAIL
+TAILEOF
+
+# Statement forms that hand the turn over without a question mark. These are the
+# subtler hang: they read as decisive and still stop until someone replies.
+#
+# "your call" and its synonyms are the sharpest of them: they name the human as
+# the decider explicitly, so the turn cannot continue by construction. If it is
+# genuinely the human's call, that is a filed question, not an inline one.
+#
+# "say go" and "if you want it" are the same move in imperative clothing, and
+# they are worse in one specific way: they get used when a tracked issue for the
+# work ALREADY EXISTS. The work is authorised, written down, and prioritised,
+# and the turn still stops to request a start signal it does not need. An open
+# issue is the go-ahead. Nothing further is required to begin.
+#
+# Known limit, shared with every statement form here: a MENTION is not
+# distinguished from a use, so a message writing about this guard trips it. The
+# question forms escape that via the "?"-after rule; these have no equivalent
+# tell. CLAUDE_ALLOW_ASKING=1 is the intended out for that one case.
+if [ -z "$hit" ]; then
+  for pat in 'unless you say otherwise' 'unless you object' 'unless you tell me' \
+             'say the word' 'let me know if you' 'let me know whether' \
+             'let me know which' "if you'd rather" 'if you would rather' \
+             'i can do that if you' 'your call' 'your choice' 'up to you' \
+             'whichever you prefer' 'say go' 'give me the word' \
+             'if you want it' 'if you want me' 'let me know when' \
+             'happy to' ; do
+    case "$TAIL" in *"$pat"*) hit=$pat; break ;; esac
+  done
+fi
+[ -n "$hit" ] || exit 0
+
+cat >&2 <<MSG
+Blocked: this turn ends by asking permission ("$hit").
+
+The work was already implied by the request. Asking costs a full round trip and
+answers itself -- the change is worthless sitting on a branch, and the reply is
+going to be "yes".
+
+Do it, then report what you did:
+
+  - not "Want me to open a PR?"  ->  "Pushed, PR #12"
+  - not "Should I add tests?"    ->  "Added 6 tests, all pass"
+  - not "A or B -- your call."   ->  pick one, say which, keep going
+  - not "say go and I'll start"  ->  start; the open issue was the go-ahead
+
+If a tracked issue for this work is already open, there is nothing to ask for.
+Filing it was the decision. Asking for a start signal on top of it stops the
+turn for a permission that was granted when the issue was written.
+
+Where the uncertainty is real, act on the most reasonable reading, SAY which
+reading you took, and keep going. A stated assumption is correctable; a stalled
+turn is not.
+
+If you genuinely cannot proceed on any reading, that is not a chat question
+either -- file it and carry on:
+
+  ask-async "<the question>" --blocked-on decision --irreversible "<why>" \\
+    --context "<what you were doing>" --assume "<what you are doing meanwhile>"
+
+Only for something irreversible or outside what was asked: CLAUDE_ALLOW_ASKING=1
+MSG
+exit 2

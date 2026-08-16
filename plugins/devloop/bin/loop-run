@@ -1,0 +1,159 @@
+#!/bin/sh
+# Execute one tick of a durable loop, and notice when ticks were missed.
+#
+#   loop-run <name>            # run one tick now (this is what the scheduler calls)
+#   loop-run <name> --dry-run  # print the command, run nothing
+#
+# Why this exists: /loop schedules through CronCreate, whose own documentation
+# says "jobs live only in this Claude session -- nothing is written to disk, and
+# the job is gone when Claude exits", that its `durable` flag "has no effect",
+# and that jobs "only fire while the REPL is idle". So a /loop cannot outlive the
+# session, and an unattended overnight loop is exactly the case it cannot serve.
+#
+# The fix is not to poke a live session -- that inherits the same fragility, since
+# a poke to a session that has exited does nothing. Instead each tick resumes the
+# conversation from its transcript on disk with `claude -p --resume`, so the loop
+# does not need a resident process at all.
+#
+# Config lives in $LOOP_HOME/<name>.conf, written by loop-ctl:
+#   SESSION_ID=<uuid>     the conversation this loop owns, never opened interactively
+#   INTERVAL=600          seconds between ticks, for gap detection
+#   PROMPT=<text>         what to run each tick
+#
+# Exit codes: 0 tick ran · 1 tick failed · 2 misconfigured · 3 another tick holds
+# the lock (not an error -- the previous tick simply overran).
+
+set -eu
+
+LOOP_HOME=${CLAWDY_LOOP_HOME:-$HOME/.claude/clawdy-loop}
+CLAUDE_BIN=${CLAWDY_LOOP_CLAUDE:-claude}
+
+NAME=""; DRY=0
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY=1 ;;
+    -h|--help) sed -n '2,8p' "$0"; exit 0 ;;
+    -*) echo "loop-run: unknown option $a" >&2; exit 2 ;;
+    *) NAME=$a ;;
+  esac
+done
+[ -n "$NAME" ] || { echo "loop-run: usage: loop-run <name> [--dry-run]" >&2; exit 2; }
+
+CONF=$LOOP_HOME/$NAME.conf
+STATE=$LOOP_HOME/$NAME.state
+LOG=$LOOP_HOME/$NAME.log
+LOCK=$LOOP_HOME/$NAME.lock
+
+[ -f "$CONF" ] || { echo "loop-run: no such loop '$NAME' ($CONF)" >&2; exit 2; }
+# shellcheck disable=SC1090
+. "$CONF"
+[ -n "${SESSION_ID:-}" ] || { echo "loop-run: $CONF has no SESSION_ID" >&2; exit 2; }
+[ -n "${PROMPT:-}" ]    || { echo "loop-run: $CONF has no PROMPT" >&2; exit 2; }
+INTERVAL=${INTERVAL:-600}
+
+# Test seam: pinning the clock makes the gap boundary exact. Without it the
+# test samples date, loop-run samples it again, and a second landing between
+# the two flips 'exactly two intervals' into 'one missed tick'.
+now=${LOOP_RUN_NOW:-$(date +%s)}
+stamp() { date -u +'%Y-%m-%dT%H:%M:%SZ'; }
+say() { printf '%s %s\n' "$(stamp)" "$1" >> "$LOG"; }
+
+# --- how long since the last tick? -------------------------------------------
+# This is the whole point. A loop that stops looks, from the inside, exactly like
+# a loop between ticks. Recording each tick is what makes the difference visible
+# -- and it must be the tick that is recorded, never a downstream artefact like a
+# merge, which measures when a human was awake rather than whether the loop ran.
+last=0; count=0
+if [ -f "$STATE" ]; then
+  read -r last count < "$STATE" 2>/dev/null || true
+  : "${last:=0}" "${count:=0}"
+fi
+gap=$((now - last))
+count=$((count + 1))
+
+missed=0
+if [ "$last" -gt 0 ] && [ "$gap" -gt $((INTERVAL * 2)) ]; then
+  missed=$((gap / INTERVAL - 1))
+fi
+
+human_gap() {
+  h=$(( $1 / 3600 )); m=$(( ($1 % 3600) / 60 ))
+  if [ "$h" -gt 0 ]; then printf '%dh %dm' "$h" "$m"; else printf '%dm' "$m"; fi
+}
+
+# A missed tick is told to the agent, not just written to a log nobody reads.
+# The agent is the only party that can act on it -- by re-checking what changed
+# while it was not running, rather than carrying on as if no time had passed.
+FULL_PROMPT=$PROMPT
+if [ "$missed" -gt 0 ]; then
+  FULL_PROMPT="[loop-run] The previous tick was $(human_gap "$gap") ago; the interval is $((INTERVAL / 60))m, so roughly $missed tick(s) did not fire. The scheduler was asleep, suspended or stopped. Treat the world as having moved on: re-read state from disk and the API rather than from memory of the last tick.
+
+$PROMPT"
+fi
+
+if [ "$DRY" -eq 1 ]; then
+  printf 'loop:     %s\n' "$NAME"
+  printf 'session:  %s\n' "$SESSION_ID"
+  printf 'interval: %ss\n' "$INTERVAL"
+  printf 'tick:     #%s\n' "$count"
+  if [ "$last" -eq 0 ]; then printf 'last:     never (this would bootstrap)\n'
+  else printf 'last:     %s ago%s\n' "$(human_gap "$gap")" \
+       "$( [ "$missed" -gt 0 ] && printf ' — %s MISSED' "$missed" || true )"; fi
+  printf 'command:  %s -p --resume %s <prompt>\n' "$CLAUDE_BIN" "$SESSION_ID"
+  printf -- '--- prompt ---\n%s\n' "$FULL_PROMPT"
+  exit 0
+fi
+
+mkdir -p "$LOOP_HOME"
+
+# --- one tick at a time ------------------------------------------------------
+# A tick that overruns its interval must not be joined by the next one; two
+# processes appending to one transcript is how the conversation gets corrupted.
+# mkdir is the atomic primitive available everywhere -- flock is not on macOS.
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # A lock older than four intervals is a crashed tick, not a running one.
+  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +$(( INTERVAL * 4 / 60 )) 2>/dev/null)" ]; then
+    say "stale lock cleared"
+    rmdir "$LOCK" 2>/dev/null || true
+    mkdir "$LOCK" 2>/dev/null || { echo "loop-run: could not take the lock" >&2; exit 3; }
+  else
+    say "tick #$count skipped — previous tick still running"
+    echo "loop-run: previous tick still running" >&2
+    exit 3
+  fi
+fi
+trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT INT TERM
+
+# --- run it ------------------------------------------------------------------
+# First tick creates the conversation; later ticks resume it, which is what
+# carries context across a machine restart. --resume on a session that does not
+# exist yet fails, so the two cases are distinguished by the state file.
+if [ "$last" -eq 0 ]; then
+  say "tick #$count starting (first tick, bootstrapping session $SESSION_ID)"
+else
+  say "tick #$count starting (gap $(human_gap "$gap"), missed $missed)"
+fi
+started=$(date +%s)
+
+if [ "$last" -eq 0 ]; then
+  set -- --session-id "$SESSION_ID"
+else
+  set -- --resume "$SESSION_ID"
+fi
+
+rc=0
+"$CLAUDE_BIN" -p "$@" "$FULL_PROMPT" >> "$LOG" 2>&1 || rc=$?
+ended=$(date +%s)
+
+# The stamp is written whatever happened. A tick that ran and failed is still a
+# tick that ran, and conflating the two would hide a scheduler outage behind a
+# string of application errors.
+printf '%s %s\n' "$now" "$count" > "$STATE"
+
+if [ "$rc" -eq 0 ]; then
+  say "tick #$count ok in $((ended - started))s"
+  exit 0
+fi
+say "tick #$count FAILED rc=$rc after $((ended - started))s"
+echo "loop-run: tick failed (rc=$rc); see $LOG" >&2
+exit 1

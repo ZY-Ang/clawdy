@@ -1,0 +1,79 @@
+# Everything that has to pass before a change can reach the live site.
+#
+# This is the gate. It runs the security-rules suite against the real Firestore
+# rules engine in the emulator, checks the repo has not drifted from its own
+# documentation, and puts the built site on a preview URL so the change can be
+# looked at before it is merged.
+#
+# It deliberately does NOT deploy Firestore rules. Hosting preview channels
+# share the one production database, so shipping a branch's rules from here
+# would apply unreviewed access control to live data. Rules go out from
+# merge.yml and nowhere else.
+
+name: Checks and preview
+
+on: pull_request
+
+permissions:
+  checks: write
+  contents: read
+  pull-requests: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      # The Firestore emulator is a Java program. The hosted runner images ship
+      # a JDK, but pinning one here means a change to the image cannot quietly
+      # turn the rules suite into a skipped step.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - run: npm ci
+
+      # Cheap, and it catches the failures that survive review: docs describing
+      # a manual step CI already does, a workflow pointed at the wrong Firebase
+      # project, an allow-list that grew a copy inside the page.
+      - name: Check for drift
+        run: npm run check
+
+      - run: npm run build
+
+      # The reason this template exists. Google auto-deploys AI-drafted security
+      # rules and tells you to double-check them; this is the double-check.
+      - name: Security rules
+        run: npm test
+
+  preview:
+    needs: test
+    # A pull request from a fork cannot be given the deploy credentials, and
+    # should not be: the branch it builds is written by someone outside the
+    # repo. Fork PRs get the checks above and no preview URL.
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - run: npm run build
+
+      - uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: ${{ secrets.GITHUB_TOKEN }}
+          firebaseServiceAccount: ${{ secrets.__SA_SECRET__ }}
+          projectId: __PROJECT_ID__

@@ -1,0 +1,127 @@
+#!/bin/sh
+# What can actually keep a loop running here?
+#
+#   loop-env            # report, and recommend
+#   loop-env --quiet    # just the recommendation keyword
+#
+# Run this BEFORE choosing a heartbeat. The right mechanism is decided by the
+# environment, not by preference, and environments differ more than they look:
+# a Docker container and a laptop both "have cron" right up until you check
+# whether anything is running to fire it.
+#
+# Exit codes: 0 a durable option exists · 1 nothing durable here (say so, do not
+# pretend a /loop will survive).
+
+set -u
+
+QUIET=0
+for a in "$@"; do
+  case "$a" in
+    --quiet|-q) QUIET=1 ;;
+    -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
+    *) echo "loop-env: unknown option $a" >&2; exit 2 ;;
+  esac
+done
+
+have() { command -v "$1" >/dev/null 2>&1; }
+say()  { [ "$QUIET" -eq 1 ] || printf '%s\n' "$1"; }
+
+OS=$(uname -s 2>/dev/null || echo unknown)
+
+# --- containerised? ----------------------------------------------------------
+CONTAINER=no
+[ -f /.dockerenv ] && CONTAINER=docker
+[ -f /run/.containerenv ] && CONTAINER=podman
+if [ "$CONTAINER" = no ] && [ -r /proc/1/cgroup ]; then
+  grep -qE 'docker|containerd|kubepods|lxc' /proc/1/cgroup 2>/dev/null && CONTAINER=container
+fi
+
+# Test seam. pid 1 is the one input a PATH sandbox cannot fake, and the case it
+# decides -- systemctl present, pid 1 something other than systemd -- is exactly
+# the one worth having. It passed on a container host and failed the first time
+# CI ran it on a systemd VM, which is the wrong order to learn that in.
+if [ "${LOOP_ENV_INIT+set}" = set ]; then
+  INIT=$LOOP_ENV_INIT
+else
+  INIT=""
+  [ -r /proc/1/comm ] && INIT=$(cat /proc/1/comm 2>/dev/null)
+fi
+
+# --- schedulers, checked for actually working, not merely installed ---------
+# The distinction matters and is the whole reason this script exists. A crontab
+# binary with no daemon behind it accepts your job and never runs it, which is
+# the same silent failure as a /loop that stops -- just with more setup.
+LAUNCHD=no; CRON=no; CRON_WHY=""; SYSTEMD=no
+
+if have launchctl; then LAUNCHD=yes; fi
+
+if have crontab; then
+  if have pgrep && pgrep -x cron >/dev/null 2>&1 || pgrep -x crond >/dev/null 2>&1; then
+    CRON=yes
+  elif [ "$LAUNCHD" = yes ]; then
+    CRON=yes; CRON_WHY="launchd runs cron jobs on macOS"
+  else
+    CRON=no; CRON_WHY="crontab exists but no cron/crond daemon is running — jobs would be accepted and never fire"
+  fi
+else
+  CRON_WHY="no crontab command"
+fi
+
+if have systemctl && [ "$INIT" = systemd ]; then SYSTEMD=yes
+elif have systemctl; then SYSTEMD=no; fi
+
+# --- is this session reachable from outside? --------------------------------
+# Only the agent can answer this, via get_session on the claude-code-remote MCP
+# server, so the script reports what it can see and names the check rather than
+# guessing. environment_kind tells you which of three worlds you are in.
+MCP_HINT=unknown
+[ -n "${CLAUDE_CODE_REMOTE:-}" ] && MCP_HINT=likely
+
+if [ "$QUIET" -eq 0 ]; then
+  printf 'os          %s\n' "$OS"
+  printf 'container   %s%s\n' "$CONTAINER" "$( [ -n "$INIT" ] && printf ' (pid 1: %s)' "$INIT" )"
+  printf 'launchd     %s\n' "$LAUNCHD"
+  printf 'cron        %s%s\n' "$CRON" "$( [ -n "$CRON_WHY" ] && printf ' — %s' "$CRON_WHY" )"
+  printf 'systemd     %s\n' "$SYSTEMD"
+  printf 'bridge/cloud %s — confirm with get_session, read .environment_kind\n' "$MCP_HINT"
+  printf '\n'
+fi
+
+# --- recommend ---------------------------------------------------------------
+# Ordered by what each survives, not by convenience. A server-side schedule
+# outlives the machine; a local one only outlives the session.
+if [ "$LAUNCHD" = yes ] || [ "$CRON" = yes ] || [ "$SYSTEMD" = yes ]; then
+  [ "$QUIET" -eq 1 ] && { echo local-scheduler; exit 0; }
+  say 'A local scheduler is available:'
+  [ "$LAUNCHD" = yes ] && say '  loop-ctl install <name> --interval 10m --prompt-file TICK.md --caffeinate'
+  { [ "$CRON" = yes ] || [ "$SYSTEMD" = yes ]; } && [ "$LAUNCHD" = no ] && \
+    say '  loop-ctl install <name> --interval 10m --prompt-file TICK.md'
+  say ''
+  say 'Still check environment_kind first. If this session is reachable from a'
+  say 'phone, a send_later chain is server-side and survives more — including'
+  say 'this machine being off. Use both: the chain as the heartbeat, the local'
+  say 'scheduler to restart the session if the process itself dies.'
+  exit 0
+fi
+
+[ "$QUIET" -eq 1 ] && { echo no-local-scheduler; exit 1; }
+say 'NO local scheduler here. A /loop will not survive, and neither will cron.'
+say ''
+say 'Check environment_kind with get_session, and confirm send_later is really'
+say 'server-side by looking for it in list_triggers — if that call is unavailable,'
+say 'the MCP server is not attached and send_later is not an option here at all.'
+say ''
+say '  anthropic_cloud → send_later chain. Fully durable; the platform resumes you.'
+say '  bridge          → send_later chain, but it only lands while the session is'
+say '                    connected — it is delivered to a process that must exist.'
+say '  neither/no MCP  → nothing server-side is available. See below.'
+say ''
+say 'With no scheduler and no MCP, a backgrounded task is still available, and it'
+say 'is the only option that stops the session going idle in the first place:'
+say ''
+say '  pr-watch <n> --wait &        # wait on real work; the wait IS the tick'
+say '  sleep 600 && echo wake up &  # degenerate form, when nothing to wait on'
+say ''
+say 'The harness delivers a notification when the process exits, which wakes the'
+say 'agent. This survives idle but NOT the session exiting — say which you have.'
+exit 1

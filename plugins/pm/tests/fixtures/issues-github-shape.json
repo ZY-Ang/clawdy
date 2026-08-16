@@ -1,0 +1,221 @@
+[
+  {
+    "number": 90,
+    "title": "Gitea's repositories and its generated app.ini have no backup at all",
+    "state": "OPEN",
+    "labels": [
+      {
+        "name": "task"
+      },
+      {
+        "name": "priority-high"
+      },
+      {
+        "name": "urgency-high"
+      },
+      {
+        "name": "data-loss-risk"
+      },
+      {
+        "name": "size-m"
+      },
+      {
+        "name": "area-backup"
+      }
+    ],
+    "createdAt": "2026-08-19T15:14:48Z",
+    "updatedAt": "2026-08-20T14:12:41Z",
+    "comments": [],
+    "blockedBy": {
+      "nodes": [],
+      "totalCount": 0
+    }
+  },
+  {
+    "number": 91,
+    "title": "The R2 backups are not encrypted, and two documents say they are",
+    "state": "OPEN",
+    "labels": [
+      {
+        "name": "needs-human"
+      },
+      {
+        "name": "priority-high"
+      },
+      {
+        "name": "urgency-low"
+      },
+      {
+        "name": "security"
+      },
+      {
+        "name": "size-m"
+      },
+      {
+        "name": "area-backup"
+      }
+    ],
+    "createdAt": "2026-08-19T15:14:50Z",
+    "updatedAt": "2026-08-20T14:12:43Z",
+    "comments": [
+      {
+        "author": "ZY-Ang",
+        "body": "/adhd please. I don't get your wall of text."
+      },
+      {
+        "author": "ZY-Ang",
+        "body": "\ud83e\udd16\n\nRewritten \u2014 the wall of text is gone. The whole thing is now:\n\n**Pick A or B.**\n\n- **A.** Scramble the backups. Safest, but adds a password that must never be lost \u2014 lose it and every backup is unreadable forever.\n- **B.** Leave them, and I fix the two documents that wrongly claim they are already scrambled.\n\nThat is the entire decision. Everything else moved into a fold.\n\nOne thing worth knowing either way: the claim is false **today**. `AGENTS.md` and `docs/host-state.md` both say the storage \"holds nothing but ciphertext\", and only the vault's own backup is. I will correct that whichever you pick."
+      },
+      {
+        "author": "ZY-Ang",
+        "body": "I don't know if they are enabled, how do I check on the dashboard?"
+      },
+      {
+        "author": "ZY-Ang",
+        "body": "\ud83e\udd16\n\nRewritten \u2014 it is now just A or B, and the rest is folded away.\n\nOn your question: **the Cloudflare dashboard cannot tell you this.** It may say objects are encrypted at rest, and that is true and irrelevant \u2014 it protects against someone stealing Cloudflare's disks, not against someone with your R2 token, who gets the file already decrypted.\n\nThe only check that answers it is reading a backup: a plain PostgreSQL dump starts with the letters `PGDMP`. The exact command is in the issue body.\n\nI already know the answer from the config \u2014 no cipher in `pgbackrest.conf`, a plain `pg_dump -Fc` in the script \u2014 so run it only if you want to see it yourself.\n\n**Still needs you:** you still have to pick A or B; the trade is yours, not mine"
+      },
+      {
+        "author": "ZY-Ang",
+        "body": "Need more details on the two available options, and the problem we are trying to solve"
+      },
+      {
+        "author": "ZY-Ang",
+        "body": "\ud83e\udd16\n\nRewritten with the detail you asked for. The whole thing is now the problem in one paragraph, then each option with what it costs.\n\n**The problem:** your database is copied to Cloudflare R2 daily and those copies are not scrambled. Anyone with the R2 key downloads and reads them directly \u2014 every Gitea password hash, every tenant row. The key lives on the NAS.\n\n**A** \u2014 pgBackRest encrypts them. A stolen key becomes useless. The cost is a passphrase that can **never** be lost, stored off the NAS with your unseal keys; lose it and every backup is permanently unreadable, including the one you reach for in a disaster.\n\n**B** \u2014 leave them. Nothing new to lose; the key stays the only thing protecting the database.\n\n**I would pick B, narrowly** \u2014 a lost passphrase is a worse day than a leaked key, and the key is scoped to one bucket and rotatable in a click while the passphrase is neither. That flips if the key ever gets exposed more widely, or the database starts holding something you would mind being read.\n\nI fix the two documents either way, because they currently claim the backups already are encrypted.\n\n**Still needs you:** A or B \u2014 the trade between a leaked key and a lost passphrase is yours"
+      }
+    ],
+    "blockedBy": {
+      "nodes": [],
+      "totalCount": 0
+    }
+  },
+  {
+    "number": 109,
+    "title": "Plan: what this platform cannot tell you about itself, and the order to fix it",
+    "state": "OPEN",
+    "labels": [
+      {
+        "name": "task"
+      },
+      {
+        "name": "priority-med"
+      },
+      {
+        "name": "urgency-low"
+      },
+      {
+        "name": "size-l"
+      },
+      {
+        "name": "area-meta"
+      }
+    ],
+    "createdAt": "2026-08-19T17:33:50Z",
+    "updatedAt": "2026-08-20T14:13:03Z",
+    "comments": [],
+    "blockedBy": {
+      "nodes": [],
+      "totalCount": 0
+    }
+  },
+  {
+    "number": 146,
+    "title": "R2 now holds gitea's signing secrets in plaintext, and host-state says otherwise",
+    "state": "OPEN",
+    "labels": [
+      {
+        "name": "task"
+      },
+      {
+        "name": "priority-high"
+      },
+      {
+        "name": "urgency-low"
+      },
+      {
+        "name": "security"
+      },
+      {
+        "name": "size-s"
+      },
+      {
+        "name": "area-backup"
+      }
+    ],
+    "createdAt": "2026-08-19T21:26:16Z",
+    "updatedAt": "2026-08-20T14:15:12Z",
+    "comments": [],
+    "blockedBy": {
+      "nodes": [],
+      "totalCount": 0
+    }
+  },
+  {
+    "number": 175,
+    "title": "Delete /volume1/docker/wb-zy/tmp-ha-config-copy, or keep it?",
+    "state": "OPEN",
+    "labels": [
+      {
+        "name": "question"
+      },
+      {
+        "name": "needs-human"
+      },
+      {
+        "name": "priority-low"
+      },
+      {
+        "name": "urgency-low"
+      },
+      {
+        "name": "size-s"
+      },
+      {
+        "name": "area-meta"
+      }
+    ],
+    "createdAt": "2026-08-20T00:43:29Z",
+    "updatedAt": "2026-08-20T14:15:59Z",
+    "comments": [
+      {
+        "author": "ZY-Ang",
+        "body": "delete it"
+      }
+    ],
+    "blockedBy": {
+      "nodes": [],
+      "totalCount": 0
+    }
+  },
+  {
+    "number": 223,
+    "title": "gitea-init purges the admin on any non-2xx, and three of those causes are permanent",
+    "state": "OPEN",
+    "labels": [
+      {
+        "name": "task"
+      },
+      {
+        "name": "priority-high"
+      },
+      {
+        "name": "urgency-high"
+      },
+      {
+        "name": "data-loss-risk"
+      },
+      {
+        "name": "size-s"
+      },
+      {
+        "name": "area-gitea"
+      }
+    ],
+    "createdAt": "2026-08-20T03:46:53Z",
+    "updatedAt": "2026-08-20T14:17:44Z",
+    "comments": [],
+    "blockedBy": {
+      "nodes": [],
+      "totalCount": 0
+    }
+  }
+]

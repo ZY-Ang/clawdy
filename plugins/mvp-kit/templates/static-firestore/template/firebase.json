@@ -1,0 +1,37 @@
+{
+  "hosting": {
+    "//": "Serves dist/, which tools/build.mjs regenerates as an allow-list of exactly the files the browser is meant to receive. Pointing Hosting at the repo root instead would publish every note, export and stray index.html that ever lands in this folder, and you would find out which ones mattered afterwards.",
+    "public": "dist",
+    "ignore": [
+      "firebase.json",
+      ".firebaserc",
+      "**/.*",
+      "**/node_modules/**"
+    ],
+    "headers": [
+      {
+        "//": "no-cache means 'revalidate before reusing', not 'never cache' -- a 304 still costs nothing. It is here because the alternative is a phone running last week's JavaScript for an hour after a fix ships, which is exactly how a client with a stale version guard stays alive after the guard is corrected.",
+        "source": "**/*.@(js|html)",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache" }
+        ]
+      },
+      {
+        "//": "Headers match the REQUEST path, not the file that ends up being served, so the bare '/' that people actually open never matches the pattern above and would fall back to the default max-age=3600. It needs its own rule.",
+        "source": "/",
+        "headers": [
+          { "key": "Cache-Control", "value": "no-cache" }
+        ]
+      }
+    ]
+  },
+  "firestore": {
+    "rules": "firestore.rules"
+  },
+  "emulators": {
+    "//": "Used by `npm test`, which boots the Firestore emulator to run the security-rules suite. The UI is off because nothing here is interactive -- the suite exits and the emulator goes with it.",
+    "firestore": { "port": 8080 },
+    "ui": { "enabled": false },
+    "singleProjectMode": true
+  }
+}

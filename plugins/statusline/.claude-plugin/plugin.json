@@ -1,0 +1,11 @@
+{
+  "name": "statusline",
+  "description": "Statusline showing model, context use and token counts — with cost shown on Bedrock and DeepSeek, where you are actually billed per token.",
+  "version": "0.2.0",
+  "author": {
+    "name": "ZY-Ang"
+  },
+  "homepage": "https://github.com/ZY-Ang/clawdy/tree/main/plugins/statusline",
+  "repository": "https://github.com/ZY-Ang/clawdy",
+  "license": "MIT"
+}

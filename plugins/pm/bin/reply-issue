@@ -1,0 +1,177 @@
+#!/bin/sh
+# Reply on a GitHub issue or PR thread, marked as agent-authored.
+#
+#   reply-issue 42 "Fixed in abc1234 — the retry now backs off." --clears
+#   reply-issue 42 "Still digging, here is what I found" --keeps "still need the DNS record"
+#   reply-issue 42 --body -            # read the body from stdin
+#   reply-issue 42 "..." --repo owner/name --dry-run
+#
+# On an issue labelled `needs-human`, exactly one of --clears / --keeps is
+# REQUIRED. That label answers one question -- is a person still waited on? --
+# and replying without answering it is what leaves a question sitting in the
+# queue after it was already answered.
+#
+#   --clears        answered and acted on, but the issue is still worth tracking
+#                   as ordinary work. The label comes off; the issue stays open.
+#   --closes        answered and no longer needed at all. Label off, issue closed.
+#                   Takes --as completed|not-planned|duplicate; "done" and
+#                   "superseded" and "won't do" read very differently in a
+#                   backlog six weeks later, and GitHub records the difference.
+#   --keeps "<why>" a person is still needed, and this says what for. The label
+#                   stays, and the reason is appended so the thread says why.
+#
+# Deliberately not automatic. Whether the answer was enough is a judgement only
+# the agent replying can make -- an acknowledgement, a partial answer and a
+# follow-up question all look the same from outside. What is enforced is that
+# the judgement gets made, not which way it goes.
+#
+# Every reply carries the agent mark. That is not decoration: on GitHub an agent
+# posts through the human's own token, so author alone cannot distinguish the
+# two, and `check-replies` reads the mark to decide whether a question is still
+# waiting on a person or has been answered.
+#
+# Marking is automatic and cannot be forgotten. It is added when missing rather
+# than demanded -- a guard that rejects the call teaches agents to route around
+# it, and posting straight through `gh` is always one keystroke away.
+#
+# Requires: gh, authenticated.
+
+set -eu
+
+LIB=$(CDPATH= cd -- "$(dirname -- "$0")/../lib" && pwd)
+. "$LIB/agent-prefix.sh"
+PM_LIB=$LIB
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+
+usage() { sed -n '2,17p' "$0"; exit "${1:-0}"; }
+
+[ $# -ge 1 ] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+
+NUMBER=$1; shift
+case "$NUMBER" in ''|*[!0-9]*) echo "reply-issue: first argument must be an issue or PR number" >&2; exit 2 ;; esac
+
+BODY=""; REPO=""; DRY=0; CLEARS=0; CLOSES=0; KEEPS=""; CLOSE_AS=completed
+if [ $# -gt 0 ]; then
+  case "$1" in --*) ;; *) BODY=$1; shift ;; esac
+fi
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --body) BODY=$2; shift 2 ;;
+    --clears) CLEARS=1; shift ;;
+    --closes) CLOSES=1; CLEARS=1; shift ;;
+    --as) CLOSE_AS=$2; shift 2 ;;
+    --keeps) KEEPS=$2; shift 2 ;;
+    --repo) REPO=$2; shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    -h|--help) usage 0 ;;
+    *) echo "reply-issue: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+# Stdin is read only when asked for. An agent's stdin is not a terminal, so
+# reading it opportunistically hangs forever with nothing reporting why.
+if [ "$BODY" = "-" ]; then BODY=$(cat); fi
+[ -n "$BODY" ] || { echo "reply-issue: a body is required" >&2; exit 2; }
+
+case "$CLOSE_AS" in
+  completed|not-planned|duplicate) ;;
+  *) echo "reply-issue: --as must be completed, not-planned or duplicate" >&2; exit 2 ;;
+esac
+if [ "$CLOSES" -eq 0 ] && [ "$CLOSE_AS" != completed ]; then
+  echo "reply-issue: --as only means anything with --closes" >&2; exit 2
+fi
+
+if [ "$CLEARS" -eq 1 ] && [ -n "$KEEPS" ]; then
+  echo "reply-issue: --clears/--closes and --keeps are mutually exclusive" >&2; exit 2
+fi
+
+# Does this issue actually carry the label? Asking is cheaper than guessing, and
+# on an issue that never had it neither flag should be demanded.
+HAS_LABEL=0
+if [ "$DRY" -eq 1 ]; then
+  # In a dry run there is nothing to query, so honour whatever was declared and
+  # let the flag combination itself be what is exercised.
+  [ -n "${REPLY_ISSUE_FAKE_LABEL:-}" ] && HAS_LABEL=1
+elif provider_available; then
+  if provider_issue_labels "$NUMBER" "$REPO" | grep -qx 'needs-human'; then HAS_LABEL=1; fi
+fi
+
+if [ "$HAS_LABEL" -eq 1 ] && [ "$CLEARS" -eq 0 ] && [ -z "$KEEPS" ]; then
+  {
+    printf 'reply-issue: #%s is labelled needs-human. Say what this reply does to that.\n\n' "$NUMBER"
+    printf 'Remove the label if this issue is still needed for task tracking, or\n'
+    printf 'close it if it is no longer needed.\n\n'
+    printf '  --clears              still worth tracking as work -- label off, stays open\n'
+    printf '  --closes [--as X]     no longer needed at all -- label off, issue closed\n'
+    printf '                        X is completed (default), not-planned or duplicate\n'
+    printf '  --keeps "<why>"       a person is still needed, and this is what for\n\n'
+    printf 'The label answers one question: is a person still blocking this? Replying\n'
+    printf 'without answering it is how an issue stays in the queue after it was\n'
+    printf 'already answered -- the human replied, you acted, and the label outlived\n'
+    printf 'both.\n'
+  } >&2
+  exit 2
+fi
+
+# The reason goes in the reply, not just in a flag: a thread that says why it is
+# still blocked can be answered; a bare label cannot.
+[ -n "$KEEPS" ] && BODY="$BODY
+
+**Still needs you:** $KEEPS"
+
+BODY=$(agent_prefix "$BODY")
+
+if [ "$DRY" -eq 1 ]; then
+  printf '%s: would comment on %s' "$(provider_name)" "$NUMBER"
+  [ -n "$REPO" ] && printf ' --repo %s' "$REPO"
+  printf ' --body <below>\n--- body ---\n%s\n------------\n' "$BODY"
+  exit 0
+fi
+
+provider_available || { echo "reply-issue: $(provider_name) is not available" >&2; exit 2; }
+# On GitHub this works on pull requests too, since a PR is modelled as an issue.
+# A backend where they are separate objects has to say so in its own provider.
+provider_comment "$NUMBER" "$BODY" "$REPO" || {
+  echo "reply-issue: the comment did not post" >&2
+  [ -n "${PROVIDER_ERR:-}" ] && printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
+  exit 2
+}
+
+# Label last: a failed comment must not leave the issue looking unblocked when
+# nothing was actually said. Comment, then label, then close -- that order is
+# load-bearing and survives the flattening below.
+#
+# The close used to be nested INSIDE this block, two levels deep. --closes sets
+# both CLOSES and CLEARS, so on an issue without needs-human the outer condition
+# was false and BOTH statements were skipped: the comment posted, the issue
+# stayed open, nothing printed, and it exited 0. The flag was accepted and did
+# nothing. See #59.
+#
+# The nesting encoded "clearing the label is a precondition for closing", which
+# is true only for the needs-human workflow this block was written for. --closes
+# is documented as two independent effects -- label off, issue closed -- and an
+# issue that never had the label needs only the second.
+if [ "$CLEARS" -eq 1 ] && [ "$HAS_LABEL" -eq 1 ]; then
+  if provider_label "$NUMBER" needs-human remove "$REPO"; then
+    printf 'Removed needs-human from #%s — nobody is waited on now.\n' "$NUMBER"
+  else
+    printf 'reply-issue: replied, but could not remove needs-human from #%s.\n' "$NUMBER" >&2
+    [ -n "${PROVIDER_ERR:-}" ] && printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
+    printf '  Remove it by hand or the issue stays in the queue.\n' >&2
+    exit 1
+  fi
+fi
+
+# Depends on the FLAG, not on the label.
+if [ "$CLOSES" -eq 1 ]; then
+  _reason=$(printf '%s' "$CLOSE_AS" | tr '-' '_')
+  if provider_close_issue "$NUMBER" "$_reason" "$REPO"; then
+    printf 'Closed #%s as %s.\n' "$NUMBER" "$CLOSE_AS"
+  else
+    printf 'reply-issue: replied, but could not close #%s.\n' "$NUMBER" >&2
+    [ -n "${PROVIDER_ERR:-}" ] && printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
+    exit 1
+  fi
+fi

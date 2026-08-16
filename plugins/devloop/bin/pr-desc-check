@@ -1,0 +1,79 @@
+#!/bin/sh
+# Reject pull request descriptions that read as essays.
+#
+#   pr-desc-check body.md
+#   gh pr view 12 --json body -q .body | pr-desc-check
+#
+# Passes when the non-collapsed part of the body is mostly bullets, headings and
+# tables. Fails when it is walls of prose. Wordy background is fine -- put it in
+# a <details> block and it stops counting.
+#
+# Limits:
+#   at most 12 prose lines, and 4000 characters, outside <details> and code
+#   fences. Bullets, numbered items, headings, quotes, table rows and HTML tag
+#   lines are not prose.
+#
+# Exits 0 when it passes, 2 when it does not.
+
+PROSE_MAX=${PR_DESC_PROSE_MAX:-12}
+CHAR_MAX=${PR_DESC_CHAR_MAX:-4000}
+
+awk -v prose_max="$PROSE_MAX" -v char_max="$CHAR_MAX" '
+  # The agent mark is one emoji on its own line, not prose. Billing it against
+  # the budget would cost every marked description a line for nothing.
+  { if ($0 == "\xf0\x9f\xa4\x96") next }
+
+  # <details> ... </details> is collapsed in the UI, so it does not count.
+  # Tracked as a state flag because the block spans lines.
+  {
+    line = $0
+    lower = tolower(line)
+    if (!in_details && index(lower, "<details")) { in_details = 1 }
+    if (in_details) {
+      if (index(lower, "</details>")) in_details = 0
+      next
+    }
+
+    chars += length(line) + 1
+
+    t = line
+    sub(/^[ \t]+/, "", t)
+    if (t == "") next
+
+    # Fenced code is not prose either.
+    if (substr(t, 1, 3) == "```") { in_fence = !in_fence; next }
+    if (in_fence) next
+
+    # Bullets, numbered items, headings, quotes, table rows, raw HTML.
+    if (t ~ /^([-*+][ \t])/)      next
+    if (t ~ /^[0-9]+[.)][ \t]/)   next
+    if (t ~ /^#{1,6}[ \t]/)       next
+    if (t ~ /^>/)                 next
+    if (t ~ /^\|/)                next
+    if (substr(t, 1, 1) == "<")   next
+
+    prose++
+  }
+  END {
+    fail = 0
+    if (prose > prose_max) {
+      printf "pr-desc-check: %d prose lines outside <details> (max %d)\n", prose, prose_max > "/dev/stderr"
+      fail = 1
+    }
+    if (chars > char_max) {
+      printf "pr-desc-check: %d characters outside <details> (max %d)\n", chars, char_max > "/dev/stderr"
+      fail = 1
+    }
+    if (fail) {
+      print "" > "/dev/stderr"
+      print "Lead with bullets. Move background and rationale into:" > "/dev/stderr"
+      print "  <details><summary>Background</summary>" > "/dev/stderr"
+      print "" > "/dev/stderr"
+      print "  ...the long version..." > "/dev/stderr"
+      print "" > "/dev/stderr"
+      print "  </details>" > "/dev/stderr"
+      exit 2
+    }
+    printf "pr-desc-check: ok (%d prose lines, %d chars outside <details>)\n", prose, chars
+  }
+' "$@"

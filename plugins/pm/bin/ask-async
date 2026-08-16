@@ -1,0 +1,177 @@
+#!/bin/sh
+# AskUserQuestion, without the blocking.
+#
+# Same shape as the inline tool -- a question, and options with reasons -- but it
+# files a GitHub issue and returns immediately. The human ticks a box whenever
+# they get to it, on whatever device they have. The work does not wait.
+#
+#   ask-async "Should deleted orders keep their invoice number?" \
+#     --context "Writing the delete path. Both readings are defensible." \
+#     --option "Keep it|Numbering gets gaps, but invoices stay immutable" \
+#     --option "Drop it|Clean numbering, but invoices become mutable" \
+#     --assume "Keeping it — reversible either way, and immutability is the safer default"
+#
+# --assume is REQUIRED, and is the whole point. An async question is only useful
+# if the work continues, which means you must have decided what to do meanwhile.
+# If you cannot answer it, you are not asking a question -- you are stopping, and
+# should say so in the issue instead.
+#
+# Options are optional but strongly preferred. A question answerable by ticking a
+# box gets answered from a phone in ten seconds. One needing a paragraph waits
+# for someone to be at a desk with the context reloaded.
+#
+# Flags: --context TEXT (required)  --option "Label|Why"  --assume TEXT (required)
+#        --repo owner/name          --dry-run
+#
+# Requires: gh, authenticated.
+
+set -eu
+
+# Marked as agent-authored like everything else posted from here, so that
+# `check-replies` can tell an unanswered question from an answered one.
+LIB=$(CDPATH= cd -- "$(dirname -- "$0")/../lib" && pwd)
+. "$LIB/agent-prefix.sh"
+. "$LIB/persist.sh"
+. "$LIB/shape.sh"
+PM_LIB=$LIB
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+
+usage() { sed -n '2,26p' "$0"; exit "${1:-0}"; }
+
+[ $# -ge 1 ] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+
+QUESTION=$1; shift
+BLOCKED=""; IRREV=""
+CONTEXT=""; ASSUME=""; REPO=""; DRY=0
+OPTIONS=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --blocked-on) BLOCKED=$2; shift 2 ;;
+    --irreversible) IRREV=$2; shift 2 ;;
+    --context) CONTEXT=$2; shift 2 ;;
+    --assume)  ASSUME=$2;  shift 2 ;;
+    --option)  OPTIONS="$OPTIONS$2
+"; shift 2 ;;
+    --repo)    REPO=$2;    shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    *) echo "ask-async: unknown option '$1'" >&2; exit 2 ;;
+  esac
+done
+
+[ -n "$CONTEXT" ] || { echo "ask-async: --context is required — say what you were doing and why this came up" >&2; exit 2; }
+
+if [ -z "$ASSUME" ]; then
+  cat >&2 <<'MSG'
+ask-async: --assume is required.
+
+An async question only helps if the work continues while it waits, so you have to
+say what you are doing meanwhile. If there is no reasonable default, you are not
+asking a question — you are stopping. File that instead:
+
+  file-issue question "..." --body "blocked because ..., tried ..., would unblock if ..."
+MSG
+  exit 2
+fi
+
+# Why this exists: a needs-human issue reads as diligence and costs the agent
+# nothing, while deciding costs it something. The local optimum is to file
+# everything and decide nothing. Naming the blocker is what separates a question
+# from a decision being handed over.
+if [ -z "$BLOCKED" ]; then
+  {
+    printf 'ask-async: --blocked-on is required. One of:\n\n'
+    printf '  access    you lack a credential, a permission, or the network to find out\n'
+    printf '  decision  only the human can choose, and acting first cannot be undone\n'
+    printf '  fact      something knowable that you cannot reach right now\n\n'
+    printf 'Only the first two produce a question. A fact becomes an assumption plus a\n'
+    printf 'task; a reversible decision is yours to make.\n'
+  } >&2
+  exit 2
+fi
+check_blocker "$BLOCKED" "$IRREV" || exit 2
+
+BODY="### Blocked on
+
+$BLOCKED${IRREV:+ — $IRREV}
+
+### Question
+
+$QUESTION
+
+### Context
+
+$CONTEXT
+"
+
+if [ -n "$OPTIONS" ]; then
+  BODY="$BODY
+### Options
+
+Tick one, or reply in prose if none fit.
+"
+  printf '%s' "$OPTIONS" | while IFS= read -r opt; do
+    [ -n "$opt" ] || continue
+    label=${opt%%|*}
+    why=${opt#*|}
+    [ "$why" = "$opt" ] && why=""
+    if [ -n "$why" ]; then printf -- '- [ ] **%s** — %s\n' "$label" "$why"
+    else printf -- '- [ ] **%s**\n' "$label"; fi
+  done > /tmp/ask_async_opts.$$
+  BODY="$BODY
+$(cat /tmp/ask_async_opts.$$)"
+  rm -f /tmp/ask_async_opts.$$
+fi
+
+BODY="$BODY
+
+### Proceeding with
+
+$ASSUME
+
+Work continues on this assumption. Answering changes it — nothing is blocked on you.
+
+### To answer
+
+Tick a box or reply — that is all you need to do. Whoever picks this up removes the
+\`needs-human\` label if it is still worth tracking as work, or closes it if it is not."
+
+BODY=$(agent_prefix "$BODY")
+set -- --title "$QUESTION" --label "needs-human" --label "question" --body "$BODY"
+[ -n "$REPO" ] && set -- "$@" --repo "$REPO"
+
+if [ "$DRY" -eq 1 ]; then
+  echo "--- would file ---"
+  printf '%s\n' "$BODY"
+  exit 0
+fi
+
+for l in needs-human question; do
+  provider_ensure_label "$l" "$REPO"
+done
+
+# Disk first. An async question is worth nothing if the only copy dies with the
+# session, and this is exactly the moment that happens: the agent has stopped to
+# ask, so nothing else is holding the context.
+NOTE=$(persist_question question "$QUESTION" "$BODY" || true)
+
+fallback() {
+  [ -n "$NOTE" ] || { echo "ask-async: could not reach GitHub AND could not write a note" >&2; exit 1; }
+  echo "ask-async: not filed to GitHub — $1" >&2
+  echo "  kept on disk: $NOTE" >&2
+  echo "  retry later:  questions sync" >&2
+  echo "  proceeding on the stated assumption regardless" >&2
+  exit 3
+}
+
+provider_available || fallback "$(provider_name) is not available"
+URL=$(printf '%s' "$BODY" | provider_create_issue "$REPO" "$QUESTION" needs-human question) || {
+  [ -n "${PROVIDER_ERR:-}" ] && printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
+  fallback "$(provider_name) rejected the question"
+}
+[ -n "$URL" ] || fallback "$(provider_name) returned no URL"
+
+[ -n "$NOTE" ] && mark_filed "$NOTE" "$URL"
+printf '%s\n' "$URL"

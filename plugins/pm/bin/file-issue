@@ -1,0 +1,243 @@
+#!/bin/sh
+# File a GitHub issue in one line, so there is no reason not to.
+#
+#   file-issue task "Retry logic is missing" --priority high --urgency low --size s
+#   file-issue question "Should deleted orders keep their invoice number?"
+#   file-issue task "Title" --priority med --urgency low --size m --body "detail"
+#   file-issue task "Title" --priority low --urgency low --size s --severity security
+#
+# Two kinds, deliberately:
+#
+#   task      untracked work. Actionable without anyone answering anything.
+#             Labelled `task`, plus the three axes the queue orders by.
+#             This is the checklist.
+#
+#   question  needs a decision only a person can make. Labelled `needs-human`,
+#             which agents skip when picking up work, so it will not be started
+#             on a guess. This is the async inbox.
+#
+# A TASK MUST CARRY --priority, --urgency AND --size. That is not tidiness: the
+# queue ranks on exactly those three, and backlog-queue treats a missing one as
+# priority-med/size-m so that unlabelled work is never buried. Which means an
+# unlabelled backlog does not rank badly -- it ranks FLAT. Everything ties on the
+# first four keys and falls through to issue number, which is arrival order, the
+# one thing the queue exists to replace. The default is right and it is also what
+# makes the failure silent.
+#
+# Measured on the repo this was designed from: 118 open issues, 0 carrying a
+# priority, filed one at a time by this command. Backfilling them took human
+# judgement and a full pass. Nothing stopped the next 118 arriving the same way.
+#
+# The precedent is ask-async, which already refuses without --blocked-on and
+# --assume. Same reasoning: the field that makes this useful later is mandatory
+# rather than encouraged.
+#
+# A QUESTION does not need them. It is not queued -- it sits in the needs-human
+# inbox until answered, and gets its axes when it turns into work.
+#
+# Everything else is optional. To pipe the body in, pass --body - explicitly:
+#   printf 'detail\n' | file-issue task "Title" --body -
+#
+# Requires: gh, authenticated.
+
+set -eu
+
+# Everything posted from here is marked as agent-authored. See lib/agent-prefix.sh
+# -- on GitHub the agent posts under the human's own token, so the mark is the
+# only thing distinguishing the two.
+LIB=$(CDPATH= cd -- "$(dirname -- "$0")/../lib" && pwd)
+. "$LIB/agent-prefix.sh"
+. "$LIB/persist.sh"
+. "$LIB/shape.sh"
+PM_LIB=$LIB
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+
+usage() { sed -n '2,22p' "$0"; exit "${1:-0}"; }
+
+[ $# -ge 1 ] || usage 2
+case "$1" in -h|--help) usage 0 ;; esac
+
+KIND=$1; shift
+case "$KIND" in
+  task)     LABEL="task" ;;
+  question) LABEL="needs-human" ;;
+  *) echo "file-issue: first argument must be 'task' or 'question', got '$KIND'" >&2; exit 2 ;;
+esac
+
+[ $# -ge 1 ] || { echo "file-issue: a title is required" >&2; exit 2; }
+TITLE=$1; shift
+
+BODY=""; REPO=""; DRY=0; PRIORITY=""; URGENCY=""; SIZE=""; SEVERITY=""; AREA=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --body) BODY=$2; shift 2 ;;
+    --repo) REPO=$2; shift 2 ;;
+    --priority) PRIORITY=$2; shift 2 ;;
+    --urgency)  URGENCY=$2;  shift 2 ;;
+    --size)     SIZE=$2;     shift 2 ;;
+    --severity) SEVERITY=$2; shift 2 ;;
+    --area)     AREA=$2;     shift 2 ;;
+    --dry-run) DRY=1; shift ;;
+    *) echo "file-issue: unknown option '$1'" >&2; exit 2 ;;
+  esac
+done
+
+# Validated before anything is created. A typo that reaches the tracker is a
+# label nothing sorts on, which is the same flat backlog by another route.
+axis_ok() {
+  _name=$1; _val=$2; _allowed=$3
+  case " $_allowed " in
+    *" $_val "*) return 0 ;;
+    *) echo "file-issue: --$_name must be one of: $_allowed (got '$_val')" >&2; return 1 ;;
+  esac
+}
+
+# CLAUDE_ISSUE_REFILE is `questions sync` replaying a note that failed to reach
+# the tracker. A note written before the axes existed cannot grow them
+# retroactively, and refusing here would strand it on disk forever -- losing the
+# work outright, which is worse than filing it unaxed. The note carries whatever
+# axes it was created with, so anything filed after this change keeps them.
+if [ "$KIND" = task ] && [ -z "${CLAUDE_ISSUE_REFILE:-}" ]; then
+  if [ -z "$PRIORITY" ] || [ -z "$URGENCY" ] || [ -z "$SIZE" ]; then
+    cat >&2 <<'MSG'
+file-issue: a task needs --priority, --urgency and --size.
+
+The queue ranks on exactly these three. Filed without them, an issue is treated
+as priority-med/size-m -- which keeps it from being buried, and also means a
+backlog of unlabelled issues does not rank badly, it ranks FLAT: everything ties
+and falls through to issue number, which is the arrival order the queue exists
+to replace.
+
+  file-issue task "Retry logic is missing" --priority high --urgency low --size s
+
+  --priority high|med|low   cost if this is NEVER done
+  --urgency  high|low       whether WAITING makes it worse
+  --size     s|m|l          l must be split before it can be claimed
+
+Optional: --severity data-loss-risk|security  --area <thing>
+
+Priority and urgency are separate on purpose. Unencrypted backups are high
+priority and low urgency -- catastrophic, no worse next week. An expiring
+certificate is the reverse.
+MSG
+    exit 2
+  fi
+  axis_ok priority "$PRIORITY" "high med low" || exit 2
+  axis_ok urgency  "$URGENCY"  "high low"     || exit 2
+  axis_ok size     "$SIZE"     "s m l"        || exit 2
+fi
+
+[ -n "$SEVERITY" ] && { axis_ok severity "$SEVERITY" "data-loss-risk security" || exit 2; }
+
+# Reading stdin has to be asked for with --body -. Agents run with stdin attached
+# to something that is not a terminal and never closes, so an implicit read hangs
+# forever -- worse than any error, because nothing reports it.
+if [ "$BODY" = "-" ]; then BODY=$(cat); fi
+
+# A question with no context is a question nobody can answer.
+if [ "$KIND" = question ] && [ -z "$BODY" ]; then
+  echo "file-issue: a question needs a body — say what you were doing, what you" >&2
+  echo "            need decided, and what you will do with each answer." >&2
+  exit 2
+fi
+
+set -- --title "$TITLE" --label "$LABEL"
+for _extra in ${PRIORITY:+priority-$PRIORITY} ${URGENCY:+urgency-$URGENCY} \
+              ${SIZE:+size-$SIZE} ${SEVERITY:+$SEVERITY} ${AREA:+area-$AREA} ; do
+  set -- "$@" --label "$_extra"
+done
+# A question filed here would be free text landing in the same needs-human
+# inbox that ask-async fills with a shaped, tick-boxable one. Two doors into one
+# inbox, and only one of them has a shape -- so this one is closed. Issue #84 in
+# a sibling repo is what the open door produces: one question under 400 words of
+# arithmetic, with the deciding fact in paragraph four.
+if [ "$KIND" = question ] && [ "${CLAUDE_ISSUE_REFILE:-}" != "1" ]; then
+  {
+    printf 'file-issue: questions go through ask-async, which requires a shape.\n\n'
+    printf '  ask-async "the question, in one line" \\\n'
+    printf '    --blocked-on access|decision \\\n'
+    printf '    --context "what you were doing when it came up" \\\n'
+    printf '    --option "Label|why this one" \\\n'
+    printf '    --assume "what you are doing meanwhile"\n\n'
+    printf 'A free-text question is a wall of text in the inbox you expect a human to\n'
+    printf 'read quickly. If this is not really a question, file it as a task.\n'
+  } >&2
+  exit 2
+fi
+
+# Tasks are free text, but not unlimited: the same body that is unreadable in a
+# PR description is unreadable in an issue.
+if [ -n "$BODY" ]; then
+  _bf="${TMPDIR:-/tmp}/file-issue-body.$$"
+  printf '%s\n' "$BODY" > "$_bf"
+  check_shape "$_bf" "This issue body" || { rm -f "$_bf"; exit 2; }
+  rm -f "$_bf"
+fi
+
+# Marked even when empty: a bare agent-filed issue should still say so.
+BODY=$(agent_prefix "$BODY")
+set -- "$@" --body "$BODY"
+[ -n "$REPO" ] && set -- "$@" --repo "$REPO"
+
+if [ "$DRY" -eq 1 ]; then
+  # The body is multi-line once marked, and quoting it inline makes one argument
+  # look like three. Since dry-run exists to be read before posting, show the
+  # flags on one line and the body verbatim underneath.
+  # The backend name comes from the provider: a dry run that prints a gh
+  # command line is wrong the moment the backend is not GitHub.
+  printf '%s: would create' "$(provider_name)"
+  skip=0
+  for a in "$@"; do
+    if [ "$skip" -eq 1 ]; then skip=0; continue; fi
+    if [ "$a" = "--body" ]; then skip=1; printf ' --body <below>'; continue; fi
+    printf ' %s' "$(printf '%s' "$a" | sed "s/'/'\\\\''/g; s/^/'/; s/\$/'/")"
+  done
+  printf '\n--- body ---\n%s\n------------\n' "$BODY"
+  exit 0
+fi
+
+# Disk first, always. gh can be absent, the network down, the token expired, or
+# the session can die between here and GitHub -- each of those loses the item
+# silently, which is the one failure this command exists to prevent.
+NOTE=$(persist_question "$KIND" "$TITLE" "$BODY" || true)
+# Record the axes on the note as well as on the issue. `questions sync` replays
+# a note that never reached the tracker, and without these the replayed issue
+# would arrive unranked -- the exact decay this requirement exists to stop,
+# reintroduced through the durability path.
+if [ -n "$NOTE" ]; then
+  [ -n "$PRIORITY" ] && set_field "$NOTE" priority "$PRIORITY"
+  [ -n "$URGENCY" ]  && set_field "$NOTE" urgency  "$URGENCY"
+  [ -n "$SIZE" ]     && set_field "$NOTE" size     "$SIZE"
+  [ -n "$SEVERITY" ] && set_field "$NOTE" severity "$SEVERITY"
+  [ -n "$AREA" ]     && set_field "$NOTE" area     "$AREA"
+fi
+
+fallback() {
+  [ -n "$NOTE" ] || { echo "file-issue: could not reach GitHub AND could not write a note" >&2; exit 1; }
+  echo "file-issue: not filed to GitHub — $1" >&2
+  echo "  kept on disk: $NOTE" >&2
+  echo "  retry later:  questions sync" >&2
+  exit 3
+}
+
+provider_available || fallback "$(provider_name) is not available"
+
+LABELS="$LABEL ${PRIORITY:+priority-$PRIORITY} ${URGENCY:+urgency-$URGENCY} ${SIZE:+size-$SIZE} ${SEVERITY:+$SEVERITY} ${AREA:+area-$AREA}"
+
+# Create every label the issue needs, not just the kind. Issue creation FAILS on
+# a label the repo does not have, so requiring the axes without creating them
+# would refuse every first filing in a fresh repo. Harmless when they exist.
+for _l in $LABELS; do provider_ensure_label "$_l" "$REPO"; done
+
+# The provider prints the issue URL on success; keep it so the note can point at
+# it and stop being the only copy.
+# shellcheck disable=SC2086
+URL=$(printf '%s' "$BODY" | provider_create_issue "$REPO" "$TITLE" $LABELS) || {
+  [ -n "${PROVIDER_ERR:-}" ] && printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
+  fallback "$(provider_name) rejected the issue"
+}
+[ -n "$URL" ] || fallback "$(provider_name) returned no URL"
+
+[ -n "$NOTE" ] && mark_filed "$NOTE" "$URL"
+printf '%s\n' "$URL"

@@ -1,0 +1,241 @@
+#!/bin/sh
+# Questions written to disk — what is open, what a human answered, what has gone
+# stale, and getting rid of the rest.
+#
+#   questions                       # open ones, newest first
+#   questions --stale 7d            # open and older than that
+#   questions --all                 # every note, whatever its status
+#   questions answer <id> "<text>"  # record what the human said, and close it
+#   questions close  <id> [--reason superseded|irrelevant|obsolete|answered]
+#   questions prune  --older-than 30d   # delete closed/answered ones only
+#   questions sync                  # file the unsent ones to GitHub
+#   questions name   "<name>"       # label this session in listings
+#   questions show   <id>
+#
+# Notes are grouped by session, since several agents run at once and a flat
+# folder of them stops being readable quickly.
+#
+# Exit: 0 nothing needs attention · 1 something is open or unsent · 2 usage error.
+
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$HERE/../lib/persist.sh"
+PM_LIB=$HERE/../lib
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+
+usage() { sed -n '2,20p' "$0"; exit "${1:-0}"; }
+
+# --- helpers -----------------------------------------------------------------
+now=$(date +%s)
+
+# to_seconds 7d | 30d | 12h | 90
+to_seconds() {
+  case "$1" in
+    *d) echo $(( ${1%d} * 86400 )) ;;
+    *h) echo $(( ${1%h} * 3600 )) ;;
+    *m) echo $(( ${1%m} * 60 )) ;;
+    *[!0-9]*) echo "questions: bad duration '$1' (use 7d, 12h, 30m)" >&2; exit 2 ;;
+    *) echo "$1" ;;
+  esac
+}
+
+# Seconds since a note was asked. date -d is GNU and -j -f is BSD, so neither is
+# portable; the file's own mtime is close enough and works everywhere.
+age_of() { f=$1; m=$(ls -l --time-style=+%s "$f" 2>/dev/null | awk '{print $6}'); [ -n "${m:-}" ] || m=$now; echo $(( now - m )); }
+human_age() {
+  d=$(( $1 / 86400 )); h=$(( ($1 % 86400) / 3600 ))
+  if [ "$d" -gt 0 ]; then printf '%dd' "$d"; elif [ "$h" -gt 0 ]; then printf '%dh' "$h"; else printf '<1h'; fi
+}
+
+all_notes() { find "$QUESTIONS_DIR" -name '*.md' -type f 2>/dev/null | sort -r; }
+find_note() {
+  for f in $(all_notes); do
+    [ "$(get_field "$f" id)" = "$1" ] && { printf '%s' "$f"; return 0; }
+  done
+  return 1
+}
+titleof() { sed -n '1s/^# //p' "$1" 2>/dev/null; }
+statusof() { s=$(get_field "$1" status); [ -n "$s" ] || s=open; printf '%s' "$s"; }
+# The session's display name, or the topic of its oldest note as a fallback.
+label_for_dir() {
+  if [ -f "$1/.name" ]; then cat "$1/.name"
+  else
+    t=$(find "$1" -name '*.md' -type f 2>/dev/null | sort | head -1)
+    [ -n "$t" ] && get_field "$t" topic || basename "$1"
+  fi
+}
+
+# --- parse -------------------------------------------------------------------
+CMD=list
+case "${1:-}" in
+  answer|close|prune|sync|show|name|list) CMD=$1; shift ;;
+  -h|--help) usage 0 ;;
+  "") ;;
+  --*) ;;
+  *) echo "questions: unknown command '$1'" >&2; usage 2 ;;
+esac
+
+ALL=0; STALE=""; OLDER=""; REASON=answered; REPO=""; ID=""; TEXT=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --all) ALL=1; shift ;;
+    --stale) STALE=$(to_seconds "${2:?}"); shift 2 ;;
+    --older-than) OLDER=$(to_seconds "${2:?}"); shift 2 ;;
+    --reason) REASON=${2:?}; shift 2 ;;
+    --repo) REPO=${2:?}; shift 2 ;;
+    -h|--help) usage 0 ;;
+    -*) echo "questions: unknown option $1" >&2; exit 2 ;;
+    *) if [ -z "$ID" ]; then ID=$1; else TEXT=$1; fi; shift ;;
+  esac
+done
+
+[ -d "$QUESTIONS_DIR" ] || { echo "No notes yet."; exit 0; }
+
+case "$CMD" in
+# -----------------------------------------------------------------------------
+list)
+  open=0 unsent=0 total=0 shown=0
+  for d in "$QUESTIONS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    header_done=0
+    for f in $(find "$d" -name '*.md' -type f 2>/dev/null | sort -r); do
+      total=$((total + 1))
+      st=$(statusof "$f"); a=$(age_of "$f")
+      [ "$st" = open ] && open=$((open + 1))
+      [ "$(get_field "$f" filed)" = "no" ] && unsent=$((unsent + 1))
+      # Default view is what still needs something: open notes only.
+      if [ "$ALL" -eq 0 ]; then
+        [ "$st" = open ] || continue
+        [ -n "$STALE" ] && [ "$a" -lt "$STALE" ] && continue
+      fi
+      if [ "$header_done" -eq 0 ]; then printf '%s\n' "$(label_for_dir "$d")"; header_done=1; fi
+      shown=$((shown + 1))
+      mark=""; [ "$(get_field "$f" filed)" = "no" ] && mark=" [unsent]"
+      printf '  %-8s %-9s %-4s %s%s\n' "$(get_field "$f" id)" "$st" "$(human_age "$a")" "$(titleof "$f")" "$mark"
+    done
+  done
+  [ "$total" -eq 0 ] && { echo "No notes yet."; exit 0; }
+  [ "$shown" -eq 0 ] && { printf 'Nothing open. %s note(s) on disk.\n' "$total"; exit 0; }
+  printf '\n%s open, %s unsent, %s total.\n' "$open" "$unsent" "$total"
+  # Three open questions in one session is not diligence, it is a stall. Filing
+  # was made cheap on purpose, so the only thing stopping "file everything,
+  # decide nothing" is that the count is visible.
+  _mine=$(find "$(q_dir)" -name '*.md' -type f 2>/dev/null \
+          | xargs grep -l '^- kind: question$' 2>/dev/null \
+          | xargs grep -l '^- status: open$' 2>/dev/null | wc -l | tr -d ' ')
+  [ -z "$_mine" ] && _mine=0
+  if [ "$_mine" -ge 3 ]; then
+    printf '\nWARNING: %s open questions from this session alone.\n' "$_mine"
+    printf 'That is a stalling pattern, not a careful one. For each, ask whether you\n'
+    printf 'could act and undo it -- if so, act, and say which reading you took.\n'
+  fi
+  # Tasks are legitimately more numerous than questions, so the bar is higher --
+  # but unbounded is how a tracker reaches three figures one reasonable issue at
+  # a time. The count is the only thing that shows the pattern; each entry looks
+  # justified on its own.
+  _tasks=$(find "$(q_dir)" -name '*.md' -type f 2>/dev/null \
+           | xargs grep -l '^- kind: task$' 2>/dev/null \
+           | xargs grep -l '^- status: open$' 2>/dev/null | wc -l | tr -d ' ')
+  [ -z "$_tasks" ] && _tasks=0
+  if [ "$_tasks" -ge 6 ]; then
+    printf '\nNOTE: %s open tasks from this session.\n' "$_tasks"
+    printf 'Filing is for work you are not doing now. For each, ask whether you were\n'
+    printf 'already in that code and the fix was smaller than the issue -- if so, it\n'
+    printf 'was a commit, not a ticket.\n'
+  fi
+  [ "$unsent" -gt 0 ] && printf 'Send the unsent ones: questions sync\n'
+  printf 'Record an answer:    questions answer <id> "<what they said>"\n'
+  exit 1
+  ;;
+
+# -----------------------------------------------------------------------------
+answer)
+  [ -n "$ID" ] && [ -n "$TEXT" ] || { echo 'questions: usage: questions answer <id> "<text>"' >&2; exit 2; }
+  f=$(find_note "$ID") || { echo "questions: no note with id $ID" >&2; exit 2; }
+  # The answer is appended to the note itself rather than stored beside it, so
+  # the question and what came back are one artefact and cannot drift apart.
+  printf '\n## Answer\n\n_recorded %s_\n\n%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$TEXT" >> "$f"
+  set_field "$f" status answered
+  set_field "$f" answered-at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  printf 'Recorded against %s: %s\n' "$ID" "$(titleof "$f")"
+  printf '  %s\n' "$f"
+  ;;
+
+close)
+  [ -n "$ID" ] || { echo "questions: usage: questions close <id> [--reason ...]" >&2; exit 2; }
+  f=$(find_note "$ID") || { echo "questions: no note with id $ID" >&2; exit 2; }
+  set_field "$f" status closed
+  set_field "$f" closed-reason "$REASON"
+  set_field "$f" closed-at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+  printf 'Closed %s (%s): %s\n' "$ID" "$REASON" "$(titleof "$f")"
+  ;;
+
+# -----------------------------------------------------------------------------
+prune)
+  [ -n "$OLDER" ] || { echo "questions: prune needs --older-than, e.g. 30d" >&2; exit 2; }
+  gone=0 kept_open=0
+  for f in $(all_notes); do
+    st=$(statusof "$f")
+    # An open question is never pruned, however old. Age is what makes an
+    # unanswered question worth looking at, not what makes it disposable.
+    if [ "$st" = open ]; then kept_open=$((kept_open + 1)); continue; fi
+    [ "$(age_of "$f")" -ge "$OLDER" ] || continue
+    rm -f "$f" && gone=$((gone + 1))
+  done
+  # Tidy up session directories that are now empty; leave the named ones alone.
+  for d in "$QUESTIONS_DIR"/*/; do
+    [ -d "$d" ] || continue
+    [ -z "$(find "$d" -name '*.md' -type f 2>/dev/null)" ] && rm -rf "$d" 2>/dev/null || true
+  done
+  printf 'Pruned %s closed/answered note(s). Kept %s open one(s), whatever their age.\n' "$gone" "$kept_open"
+  ;;
+
+# -----------------------------------------------------------------------------
+sync)
+  provider_available || { echo "questions: $(provider_name) is not available; nothing can be synced yet" >&2; exit 1; }
+  sent=0 failed=0
+  for f in $(all_notes); do
+    [ "$(get_field "$f" filed)" = "no" ] || continue
+    title=$(titleof "$f"); kind=$(get_field "$f" kind); [ -n "$kind" ] || kind=task
+    body=$(sed -n '/^---$/,$p' "$f" | sed '1d')
+    set -- "$kind" "$title" --body -
+    # Replay the axes the note was created with, so a synced issue is ranked the
+    # same as one that reached the tracker first time. Notes written before the
+    # axes existed simply have none, and REFILE lets those through unaxed rather
+    # than stranding them.
+    for _ax in priority urgency size severity area; do
+      _v=$(get_field "$f" "$_ax")
+      [ -n "$_v" ] && [ "$_v" != "-" ] && set -- "$@" "--$_ax" "$_v"
+    done
+    [ -n "$REPO" ] && set -- "$@" --repo "$REPO"
+        # REFILE bypasses the one-door gate: this note was shaped when it was
+    # created, and re-sending it must not be re-litigated.
+    if url=$(printf '%s' "$body" | CLAUDE_QUESTIONS_NO_PERSIST=1 CLAUDE_ISSUE_REFILE=1 \
+             "$HERE/file-issue" "$@" 2>/dev/null); then
+      printf '  sent  %s\n        %s\n' "$title" "$url"
+      mark_filed "$f" "$url"; sent=$((sent + 1))
+    else
+      printf '  FAIL  %s\n' "$title"; failed=$((failed + 1))
+    fi
+  done
+  [ "$sent" -eq 0 ] && [ "$failed" -eq 0 ] && { echo "Nothing to sync."; exit 0; }
+  printf '\n%s sent, %s still unsent.\n' "$sent" "$failed"
+  [ "$failed" -eq 0 ]
+  ;;
+
+# -----------------------------------------------------------------------------
+name)
+  [ -n "$ID" ] || { echo 'questions: usage: questions name "<name>"' >&2; exit 2; }
+  d=$(q_dir); mkdir -p "$d"
+  printf '%s\n' "$ID" > "$d/.name"
+  printf 'This session is now listed as: %s\n' "$ID"
+  ;;
+
+show)
+  [ -n "$ID" ] || usage 2
+  f=$(find_note "$ID") || { echo "questions: no note with id $ID" >&2; exit 2; }
+  cat "$f"
+  ;;
+esac

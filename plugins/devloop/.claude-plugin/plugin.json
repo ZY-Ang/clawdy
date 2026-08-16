@@ -1,0 +1,11 @@
+{
+  "name": "devloop",
+  "description": "Work a GitHub backlog unattended without stalling: prove a PR is actually mergeable before asking for review, poll for CI success because it is never evented, answer review threads only after pushing the fix, and schedule with something that survives the container.",
+  "version": "0.12.0",
+  "author": {
+    "name": "ZY-Ang"
+  },
+  "homepage": "https://github.com/ZY-Ang/clawdy/tree/main/plugins/devloop",
+  "repository": "https://github.com/ZY-Ang/clawdy",
+  "license": "MIT"
+}

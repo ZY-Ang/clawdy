@@ -1,0 +1,129 @@
+#!/bin/sh
+# Record that one issue blocks another, in the tracker rather than in prose.
+#
+#   backlog-link 12 --blocked-by 7        # 12 cannot start until 7 closes
+#   backlog-link 12 --blocked-by 7,9
+#   backlog-link 12 --unblock 7
+#   backlog-link 12                       # what is blocking 12 right now
+#   backlog-link 12 --blocked-by 7 --dry-run
+#
+# The graph is what makes a class fix outrank its instances: an instance that
+# declares the class as its blocker leaves the ready set, and the class
+# accumulates the dependents that lift it. Without edges the queue can only see
+# labels, and labels cannot express "this one first".
+#
+# On the backlog this plugin was designed from the graph was ENTIRELY UNUSED --
+# every blockedBy, blocking, parent and subIssues empty across all 160 issues --
+# while five findings named their blocker in a sentence instead. A branch named
+# in prose does not resolve. This is the command that was missing.
+#
+# THE ID IS NOT THE NUMBER. GitHub takes the issue number in the URL and the
+# numeric id in the body. Passing the number in both places fails with a message
+# that names neither, which is why the lookup happens here.
+#
+# Exit: 0 done, or nothing to do · 1 refused · 2 usage, or could not tell.
+#
+# Seams:
+#   BACKLOG_LINK_JSON   current blockers, one number per line, instead of asking
+
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PM_LIB=$HERE/../lib
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+
+usage() { sed -n '2,26p' "$0"; exit "${1:-0}"; }
+
+say_backend() {
+  [ -n "${PROVIDER_ERR:-}" ] || return 0
+  printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
+  return 0
+}
+
+NUM=""; ADD=""; DEL=""; REPO=""; DRY=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --blocked-by) ADD=${2:?}; shift 2 ;;
+    --unblock)    DEL=${2:?}; shift 2 ;;
+    --repo)       REPO=${2:?}; shift 2 ;;
+    --dry-run)    DRY=1; shift ;;
+    -h|--help)    usage 0 ;;
+    -*) echo "backlog-link: unknown option $1" >&2; exit 2 ;;
+    *) [ -z "$NUM" ] || { echo "backlog-link: one issue at a time" >&2; exit 2; }
+       NUM=$1; shift ;;
+  esac
+done
+
+[ -n "$NUM" ] || { echo "backlog-link: which issue?" >&2; usage 2; }
+case "$NUM" in ''|*[!0-9]*) echo "backlog-link: '$NUM' is not an issue number" >&2; exit 2 ;; esac
+
+if [ -n "$ADD" ] && [ -n "$DEL" ]; then
+  echo "backlog-link: --blocked-by and --unblock in one call is ambiguous; run it twice" >&2
+  exit 2
+fi
+
+# Commas so a class fix can absorb its instances in one call, which is the shape
+# this is actually used in.
+numbers() { printf '%s' "$1" | tr ',' ' '; }
+for n in $(numbers "$ADD") $(numbers "$DEL"); do
+  case "$n" in ''|*[!0-9]*) echo "backlog-link: '$n' is not an issue number" >&2; exit 2 ;; esac
+  [ "$n" = "$NUM" ] && { echo "backlog-link: an issue cannot block itself (#$n)" >&2; exit 1; }
+done
+
+current() {
+  if [ -n "${BACKLOG_LINK_JSON:-}" ]; then
+    cat "$BACKLOG_LINK_JSON" 2>/dev/null || return 1
+  else
+    provider_available || return 1
+    provider_blocked_by "$NUM" "$REPO"
+  fi
+}
+
+has() { printf '%s\n' "$1" | grep -qx "$2"; }
+
+CUR=$(current) || { echo "backlog-link: could not read the current blockers of #$NUM" >&2; exit 2; }
+
+# --- read-only ----------------------------------------------------------------
+if [ -z "$ADD" ] && [ -z "$DEL" ]; then
+  if [ -z "$CUR" ]; then echo "#$NUM is blocked by nothing"
+  else
+    echo "#$NUM is blocked by:"
+    printf '%s\n' "$CUR" | sed 's/^/  #/'
+  fi
+  exit 0
+fi
+
+if [ "$DRY" -eq 1 ]; then
+  for n in $(numbers "$ADD"); do
+    has "$CUR" "$n" && echo "already: #$NUM blocked by #$n" || echo "would add: #$NUM blocked by #$n"
+  done
+  for n in $(numbers "$DEL"); do
+    has "$CUR" "$n" && echo "would remove: #$NUM blocked by #$n" || echo "not present: #$n"
+  done
+  exit 0
+fi
+
+provider_available || { echo "backlog-link: $(provider_name) is not available" >&2; exit 2; }
+
+changed=0
+for n in $(numbers "$ADD"); do
+  # Idempotent. A loop that re-reads its queue will re-link, and an error there
+  # trains it to ignore the exit code.
+  if has "$CUR" "$n"; then echo "already: #$NUM blocked by #$n"; continue; fi
+  id=$(provider_issue_id "$n" "$REPO") || id=""
+  [ -n "$id" ] || { echo "backlog-link: could not resolve the numeric id of #$n" >&2; say_backend; exit 2; }
+  provider_link "$NUM" "$id" "$REPO" || { echo "backlog-link: could not link #$NUM to #$n" >&2; say_backend; exit 2; }
+  echo "linked: #$NUM blocked by #$n"; changed=1
+done
+
+for n in $(numbers "$DEL"); do
+  if ! has "$CUR" "$n"; then echo "not present: #$n"; continue; fi
+  id=$(provider_issue_id "$n" "$REPO") || id=""
+  [ -n "$id" ] || { echo "backlog-link: could not resolve the numeric id of #$n" >&2; say_backend; exit 2; }
+  provider_unlink "$NUM" "$id" "$REPO" || { echo "backlog-link: could not unlink #$n from #$NUM" >&2; say_backend; exit 2; }
+  echo "unlinked: #$NUM no longer blocked by #$n"; changed=1
+done
+
+[ "$changed" -eq 1 ] || echo "nothing to do"
+exit 0

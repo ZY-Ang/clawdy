@@ -1,0 +1,70 @@
+#!/bin/sh
+# UserPromptSubmit: when the human speaks and a question is open, say so.
+#
+# The failure this exists for is not disagreement. An agent asks something,
+# the human answers in chat, the agent replies "noted" — and writes nothing
+# down. It is not refusing; nothing ever checked, so nothing ever happened.
+#
+# This fires at the one moment that matters: the turn where the answer arrives.
+# Its stdout is injected into the model's context, so the reminder is read
+# before the reply is composed rather than after.
+#
+# It reminds; it does not block. The agent cannot reliably tell whether a given
+# message answered the question or changed the subject, so a hook that refused
+# to let the turn end would stop the wrong turns and get switched off. A
+# reminder naming the exact command survives contact.
+#
+# Plain stdout, not JSON. `additionalContext` in a JSON payload is reported
+# broken in the VSCode extension while working in the CLI (anthropics/
+# claude-code#49063); stdout injection works in both, and the workbench this
+# was written for is VSCode-based.
+#
+# UserPromptSubmit blocks the turn until it returns and times out at 30s, so
+# this does one directory listing and nothing else. No network, no gh.
+
+QUESTIONS_DIR=${CLAUDE_QUESTIONS_DIR:-$HOME/.claude/questions}
+SESSION=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}
+
+# Silence is the common case and must cost nothing.
+[ -d "$QUESTIONS_DIR" ] || exit 0
+
+# Only this session's questions. Another agent's open question is not something
+# this human is answering right now, and naming it would be noise.
+DIR="$QUESTIONS_DIR/${SESSION:-unsessioned}"
+[ -d "$DIR" ] || exit 0
+
+n=0
+out=""
+for f in "$DIR"/*.md; do
+  [ -f "$f" ] || continue
+  st=$(sed -n 's/^- status: //p' "$f" 2>/dev/null | head -1)
+  [ -n "$st" ] || st=open
+  [ "$st" = open ] || continue
+  id=$(sed -n 's/^- id: //p' "$f" 2>/dev/null | head -1)
+  title=$(sed -n '1s/^# //p' "$f" 2>/dev/null)
+  [ -n "$id" ] || continue
+  n=$((n + 1))
+  out="$out
+  $id  $title"
+done
+
+[ "$n" -eq 0 ] && exit 0
+
+# Written as an instruction rather than a status line: a status line is read as
+# background and skipped, and being skipped is the whole problem.
+cat <<MSG
+[open questions] You asked $n question(s) in this session that are still open:
+$out
+
+If the message you are about to answer resolves one of them, record it BEFORE
+replying — not after, and not "noted":
+
+  questions answer <id> "<what the human actually said>"
+
+The answer is appended to the note, so the question and its answer stay one
+artefact. If the message did not answer any of them, ignore this entirely.
+If a question has been overtaken by events:
+
+  questions close <id> --reason superseded
+MSG
+exit 0

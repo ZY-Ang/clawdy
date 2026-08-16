@@ -1,0 +1,223 @@
+#!/bin/sh
+# Stop hook: refuse to end a turn that announces work instead of doing it.
+#
+# Its sibling, no-permission-asking, catches "shall I?". This catches "doing it
+# now", which fails the same way and is harder to notice.
+#
+# Observed three times in one session, each as the final line of a message:
+#
+#   "Filing both now, then continuing with the merged-PR sweep."  -- nothing filed
+#   "Next, per the approved plan: sweeping the 46 merged PRs..."   -- no sweep
+#   "Now backfilling across all 118 open issues."                  -- no backfill
+#
+# Turns do not resume on their own. Only a user message, a scheduled wakeup or a
+# background-task notification restarts one, and none was armed. So the work
+# simply did not happen and a human had to notice.
+#
+# WHY THIS IS WORSE THAN ASKING PERMISSION. "Shall I open a PR?" is visibly a
+# stall -- the human sees a question and knows they are needed. "Filing now"
+# reads as completed work. A day later in a scrollback it is indistinguishable
+# from a report, so nobody checks, and the gap is silent.
+#
+# TWO EXEMPTIONS, both load-bearing.
+#
+# 1. An imperative addressed to the HUMAN is not a promise. "Next action: merge
+#    #32" tells someone else what to do; it is the house closing format and
+#    blocking it would make the guard the first thing switched off. Only
+#    first-person subjects count -- I, I'll, I am, we're, let me.
+#
+# 2. A promise with a RETURN PATH is a plan, not a stall -- and the return path
+#    is read from this turn's TOOL CALLS, never from what the message claims.
+#    "Monitor armed, I will report the result" is honest only when something
+#    really was armed, and the transcript is what knows. Something will wake the
+#    turn. If the tail names such a mechanism, stand down.
+#
+# Exit 2 blocks the turn and returns stderr to the model, which then does the
+# thing rather than describing it.
+#
+# Escape: CLAUDE_ALLOW_ASKING=1, shared with the sibling hook -- one switch for
+# "this turn is deliberately about the guards", not two to remember.
+
+INPUT=$(cat 2>/dev/null || true)
+
+case "${CLAUDE_ALLOW_ASKING:-}" in 1|true) exit 0 ;; esac
+
+field() { printf '%s' "$INPUT" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1; }
+
+case "$INPUT" in *'"stop_hook_active": true'*|*'"stop_hook_active":true'*) exit 0 ;; esac
+
+TRANSCRIPT=$(field transcript_path)
+[ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
+
+command -v jq >/dev/null 2>&1 || exit 0
+LAST=$(jq -rs '
+  [ .[]
+    | select(.type == "assistant")
+    | .message.content
+    | if type == "array" then map(select(.type == "text") | .text) | join("\n") else . end
+  ] | last // ""
+' "$TRANSCRIPT" 2>/dev/null) || exit 0
+[ -n "$LAST" ] || exit 0
+
+# Same window as the sibling, and for the same reason: the tell is the closing
+# sentence, but a list of next steps often follows it.
+TAIL=$(printf '%s' "$LAST" | grep -v '^[[:space:]]*$' | tail -10 | tr 'A-Z' 'a-z')
+
+# --- exemption 2: a promise with something armed to keep it ------------------
+#
+# Read from the TRANSCRIPT, not from the message. The first version matched
+# phrases -- "monitor armed", "watching it" -- and was wrong in both directions:
+#
+#   "The suite is running; I'll report when it lands."  blocked, though a
+#                                                        monitor really was armed
+#   "Monitor armed. I'll report the CI result."          allowed, having armed
+#                                                        nothing at all
+#
+# That is attestation, and #22 already names why attestation fails: the agent
+# that skipped the step writes the artefact claiming it did not. Armedness is a
+# fact about this turn's tool calls, and the transcript records them, so ask it.
+#
+# Scope is the current turn: everything after the last human message. A human
+# turn carries a string or text content; a tool result is type "user" with
+# tool_result content, which is why the filter is on shape rather than on type.
+ARMED=$(jq -rs '
+  # index of the last genuinely-human message
+  ( [ range(0; length) as $i
+      | select(.[$i].type == "user")
+      | select( (.[$i].message.content | type) == "string"
+                or ( [ .[$i].message.content[]?.type ] | index("tool_result") | not ) )
+      | $i ] | last // -1 ) as $start
+  | [ .[ ($start + 1) : ][]
+      | select(.type == "assistant")
+      | .message.content[]?
+      | select(.type == "tool_use")
+      | select(
+            (.name | test("send_later|CronCreate|ScheduleWakeup|^Monitor$"))
+            or (.name == "Bash" and (.input.run_in_background == true))
+        )
+      | .name ]
+  | length
+' "$TRANSCRIPT" 2>/dev/null) || ARMED=0
+case "$ARMED" in ''|*[!0-9]*) ARMED=0 ;; esac
+
+# Something in this turn will wake it again, so a stated next step is a plan
+# rather than a stall.
+[ "$ARMED" -gt 0 ] && exit 0
+
+hit=""
+
+# --- first-person announcements ----------------------------------------------
+# The subject is what separates a promise from an instruction. "filing now" with
+# no subject is ambiguous; "i am filing now" is not.
+for pat in "i'll " 'i will ' 'i am going to ' "i'm going to " 'i am about to ' \
+           "i'm about to " 'about to ' 'let me go ' 'next i ' 'then i will ' \
+           "we'll " 'we will ' ; do
+  case "$TAIL" in *"$pat"*) hit=$pat; break ;; esac
+done
+
+# --- first-person PROGRESSIVE: "i am filing", "i'm sweeping" -----------------
+#
+# The subject makes this unambiguous on its own, so unlike the subjectless forms
+# below it needs no adverb to anchor it. Requiring one was the bug: "i am filing
+# now" was caught, "i am filing BOTH now" was not, and "i am starting the
+# backfill" -- no adverb anywhere -- sailed through.
+#
+# Matched on ANY -ing verb rather than a list, because the actions an agent can
+# announce are an open class and a list is out of date the first time someone
+# invents a verb for it. The exclusions are the closed class: verbs of
+# perception, cognition and state, which cannot describe work a turn performs.
+#
+# Measured on fifteen real sentences from one session -- five announcements, ten
+# reports. A bare -ing match caught 5/5 and also blocked ALL TEN reports:
+# "i am seeing 375 assertions pass", "i'm missing context on that one". With the
+# stative list excluded it is 5/5 and none. Both directions matter; a guard that
+# fires on correct output is one that gets switched off.
+#
+# There is no report of the form "i am <acting>". "I am filing" cannot describe
+# something already filed -- the past tense is "I filed".
+if [ -z "$hit" ]; then
+  ING=$(printf '%s' "$TAIL" | grep -oE "(i am|i'm|we are|we're) [a-z]+ing" | head -1)
+  if [ -n "$ING" ]; then
+    verb=${ING##* }
+    stative=0
+    for st in seeing hearing noticing missing thinking wondering hoping \
+              assuming guessing leaning feeling expecting treating taking \
+              holding reading understanding considering trusting meaning \
+              waiting hoping ; do
+      [ "$verb" = "$st" ] && { stative=1; break; }
+    done
+    [ "$stative" -eq 0 ] && hit="i am $verb"
+  fi
+fi
+
+# --- progressive announcements, which usually drop the subject ---------------
+# "Filing both now." "Now backfilling across all 118 issues." Matched with the
+# adverb attached so that a REPORT of the same shape -- "filed both, now green"
+# -- does not trip: the verb has to be the thing being announced.
+if [ -z "$hit" ]; then
+  while IFS= read -r line; do
+    # Exemption 1, made explicit rather than left to luck. "Next action: merge
+    # #32" is the house closing format, addressed to a person. Matching it would
+    # block almost every well-formed message, and a guard that fires on correct
+    # output is one nobody keeps.
+    case "$line" in "next action"*|"next actions"*) continue ;; esac
+
+    for v in filing running doing starting continuing sweeping backfilling \
+             building writing opening merging rebasing pushing checking \
+             kicking picking ; do
+      case "$line" in
+        # "Filing both now." "Now backfilling across 118 issues."
+        *"now $v"*|*"$v now"*) hit="$v now"; break ;;
+        # A clause that opens on the verb IS the announcement -- there is no
+        # subject to soften it: "Sweeping the 46 merged pull requests."
+        "$v "*) hit="$v ..."; break ;;
+      esac
+    done
+    [ -n "$hit" ] && break
+
+    # "Next, per the approved plan: sweeping the 46 merged pull requests."
+    # The verb can sit well away from the "next", so the two are looked for on
+    # the same line rather than adjacent -- adjacency is what missed this one.
+    case "$line" in
+      next,*|next:*|"next "*)
+        for v in filing running doing starting continuing sweeping backfilling \
+                 building writing opening merging rebasing pushing checking ; do
+          case "$line" in *"$v"*) hit="next ... $v"; break ;; esac
+        done ;;
+    esac
+    [ -n "$hit" ] && break
+  done <<TAILEOF
+$TAIL
+TAILEOF
+fi
+
+[ -n "$hit" ] || exit 0
+
+cat >&2 <<MSG
+Blocked: this turn ends by announcing work rather than reporting it ("$hit").
+
+Nothing will resume this turn. Only a user message, a scheduled wakeup or a
+background-task notification starts one, and none is armed -- so the sentence
+above describes work that is not going to happen.
+
+It is worse than asking permission. "Shall I?" is visibly a stall and a human
+knows they are needed. "Filing now" reads as a report, so nobody checks.
+
+Do it, then say what you did:
+
+  - not "Filing both now."        ->  "Filed #41 and #42."
+  - not "Next, sweeping the PRs." ->  "Swept 46 PRs; 12 had no closing link."
+  - not "I'll rebase and push."   ->  "Rebased onto a295971, pushed, CI green."
+
+If the work genuinely cannot finish in this turn, arm something that will come
+back to it -- a monitor, a backgrounded command, a scheduled check-in -- and it
+is exempt automatically, because this hook reads the tool calls rather than the
+sentence. Saying "monitor armed" without arming one does not help. A promise with a
+return path is a plan. A promise without one is a dropped thread.
+
+Telling the HUMAN what to do next is fine and is not what this blocks; only a
+first-person promise about your own next action is.
+
+Deliberately writing about this guard: CLAUDE_ALLOW_ASKING=1
+MSG
+exit 2

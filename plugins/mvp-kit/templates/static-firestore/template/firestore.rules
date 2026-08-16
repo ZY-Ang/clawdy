@@ -1,0 +1,75 @@
+rules_version = '2';
+
+// __APP_NAME__ — Firestore security rules.
+//
+// These rules are the only real access control this app has. Anything the page
+// itself checks is advisory: the browser was handed that JavaScript and can be
+// made to skip it, so a check that only runs client-side proves nothing to the
+// server. What stands between a shared URL and the data is this file.
+//
+// Google AI Studio drafts and auto-deploys rules like these, and Google
+// explicitly disclaims them — "you should always double-check these rules
+// before sharing or deploying your app". Nobody ships a test for them, so
+// tools/rules-tests/ does: every claim below has an assertion, run in CI
+// against the Firestore emulator on every pull request.
+//
+// The allow-list lives HERE and only here. If you find a second copy of these
+// addresses inside index.html, that copy is decoration — delete it or make it
+// clearly cosmetic, and never let it become the thing you edit when someone
+// joins. `npm run check` fails the build if index.html grows an address list.
+//
+// Adding someone is a one-line change below. It ships on the next merge to main:
+// the merge workflow deploys this file. Rules are never sent from a laptop, and
+// never from a pull request build — preview channels share this one production
+// database, so a branch's rules would apply to live data.
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // email_verified is required because the allow-list is a list of email
+    // addresses, and an address is only as trustworthy as the proof behind it.
+    // Google accounts always satisfy this — which is also why Google must stay
+    // the ONLY enabled sign-in provider. Turning on email/password in the
+    // console would let anyone self-register an address on the list, and an
+    // unverified match would then be enough to get in.
+    function signedIn() {
+      return request.auth != null
+          && request.auth.token.email_verified == true;
+    }
+
+    function allowed() {
+      return signedIn() && request.auth.token.email in [
+__ALLOWLIST__
+      ];
+    }
+
+    // The single document this app stores its state in.
+    //
+    // The version guard is enforced here rather than in the page. A phone that
+    // has been asleep holds a stale copy of the document; when it saves, a
+    // blind write silently discards everything that happened while it slept.
+    // Requiring the incoming version to be exactly one past the stored one
+    // turns that into a rejected write the app can notice and reload from —
+    // and, unlike a guard written in the page, it still holds for a client
+    // running last week's cached JavaScript.
+    match /app/state {
+      allow read:   if allowed();
+      allow create: if allowed() && request.resource.data.version == 1;
+      allow update: if allowed()
+                    && request.resource.data.version == resource.data.version + 1;
+
+      // Deletion is not something the app does, and an accidental one is not
+      // recoverable from the client. Restore from a backup instead — see
+      // docs/BACKUP.md.
+      allow delete: if false;
+    }
+
+    // Everything else stays denied, so a leaked URL cannot be used to write
+    // arbitrary documents or run the free tier out of quota with junk
+    // collections. Firestore ORs its match blocks, so this does not weaken the
+    // explicit allows above.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

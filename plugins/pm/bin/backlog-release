@@ -1,0 +1,101 @@
+#!/bin/sh
+# Give a claimed issue back to the queue.
+#
+#   backlog-release 42 --reason "blocked on the DNS record"
+#   backlog-release 42 --reason "wrong shape, splitting it" --repo o/n
+#
+# A claim that is abandoned silently is worse than no claim: the queue keeps
+# skipping the issue because something is supposedly working it, and nothing
+# ever is. `backlog-triage` reports claims that have gone quiet; this is how a
+# session hands one back on purpose.
+#
+# --reason is REQUIRED. A release with no reason leaves the next session to
+# rediscover whatever stopped this one, which is the cost the claim was meant to
+# avoid in the first place.
+#
+# The branch and the draft pull request are LEFT ALONE. Work already pushed is
+# evidence, and deleting it to tidy up a label loses the only record of what was
+# tried. Close the pull request by hand if it is genuinely worthless.
+#
+# Exit: 0 released · 1 nothing to release · 2 usage, or could not tell.
+
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PM_LIB=$HERE/../lib
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+. "$HERE/../lib/agent-prefix.sh"
+
+usage() { sed -n '2,20p' "$0"; exit "${1:-0}"; }
+
+say_backend() {
+  [ -n "${PROVIDER_ERR:-}" ] || return 0
+  printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
+  return 0
+}
+
+NUM=""; REASON=""; REPO=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --reason) REASON=${2:?}; shift 2 ;;
+    --repo)   REPO=${2:?};   shift 2 ;;
+    -h|--help) usage 0 ;;
+    -*) echo "backlog-release: unknown option $1" >&2; exit 2 ;;
+    *) [ -z "$NUM" ] || { echo "backlog-release: one issue at a time" >&2; exit 2; }
+       NUM=$1; shift ;;
+  esac
+done
+
+[ -n "$NUM" ] || { echo "backlog-release: which issue?" >&2; usage 2; }
+case "$NUM" in ''|*[!0-9]*) echo "backlog-release: '$NUM' is not an issue number" >&2; exit 2 ;; esac
+
+if [ -z "$REASON" ]; then
+  cat >&2 <<'MSG'
+backlog-release: --reason is required.
+
+Whatever stopped you is the one thing the next session cannot work out for
+itself. Without it they start from where you did, not from where you stopped.
+
+  backlog-release 42 --reason "blocked on the DNS record, filed #58"
+MSG
+  exit 2
+fi
+
+command -v jq >/dev/null || { echo "backlog-release: jq is not installed" >&2; exit 2; }
+
+if [ -n "${BACKLOG_ISSUE_JSON:-}" ]; then
+  ISSUE=$(cat "$BACKLOG_ISSUE_JSON") || { echo "backlog-release: cannot read $BACKLOG_ISSUE_JSON" >&2; exit 2; }
+else
+  provider_available || { echo "backlog-release: $(provider_name) is not available" >&2; exit 2; }
+  ISSUE=$(provider_issue "$NUM" "$REPO") || ISSUE=""
+fi
+[ -n "$ISSUE" ] || { echo "backlog-release: no data for issue $NUM" >&2; exit 2; }
+
+# Validate once, here, rather than letting jq's exit code leak out through
+# set -e. Unparseable input exited 5 with a jq parse error on stderr, which is
+# neither this tool's contract nor a message anyone can act on. "Could not tell"
+# is 2, always -- the same rule pr-watch holds.
+printf '%s' "$ISSUE" | jq -e . >/dev/null 2>&1 || {
+  echo "backlog-release: issue $NUM did not come back as JSON -- refusing to guess" >&2; exit 2; }
+
+LABELS=$(printf '%s' "$ISSUE" | jq -r '[.labels[]? | (.name // .)] | join(" ")')
+case " $LABELS " in
+  *" claimed "*) ;;
+  *) echo "backlog-release: issue $NUM is not claimed. Nothing to hand back." >&2; exit 1 ;;
+esac
+
+# Comment first. If the label comes off and the note does not, the issue returns
+# to the queue with no record of why it was dropped -- which is the exact state
+# this command exists to prevent.
+provider_comment "$NUM" "$(agent_prefix "Released back to the queue.
+
+$REASON
+
+The branch and its draft pull request are untouched.")" "$REPO" || {
+  echo "backlog-release: the comment did not post -- not removing the label" >&2; say_backend; exit 2; }
+
+provider_label "$NUM" claimed remove "$REPO" || {
+  echo "backlog-release: commented, but the 'claimed' label did not come off" >&2; say_backend; exit 2; }
+
+echo "released #$NUM"

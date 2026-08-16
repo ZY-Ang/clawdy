@@ -1,0 +1,52 @@
+#!/bin/bash
+# Wire the statusline into settings.json, robustly.
+#
+# Installing the plugin is not enough on its own: a plugin's bin/ goes on the
+# Bash tool's PATH, but the statusline is a separate process Claude Code spawns,
+# and it does not inherit that. So `"command": "claude-statusline"` never
+# resolves. This copies the script somewhere stable and writes an absolute path.
+#
+#   claude-statusline-install            # user scope, ~/.claude/settings.json
+#   claude-statusline-install --project  # this repo's .claude/settings.json
+#
+# The copy is deliberate. Pointing settings.json into the plugin cache breaks
+# the day the marketplace is removed or the layout changes; a copy under
+# ~/.claude keeps working and is yours to edit.
+
+set -eu
+
+SRC="$(cd "$(dirname "$0")" && pwd)/claude-statusline"
+DEST="$HOME/.claude/statusline.sh"
+
+SETTINGS="$HOME/.claude/settings.json"
+[ "${1:-}" = "--project" ] && SETTINGS=".claude/settings.json"
+
+[ -f "$SRC" ] || { echo "error: cannot find $SRC" >&2; exit 1; }
+command -v jq >/dev/null || { echo "error: jq is required" >&2; exit 1; }
+
+mkdir -p "$(dirname "$DEST")" "$(dirname "$SETTINGS")"
+cp "$SRC" "$DEST"
+chmod +x "$DEST"
+
+[ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
+
+# Refuse to clobber a statusline the user already configured to something else.
+EXISTING=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || echo "")
+if [ -n "$EXISTING" ] && [ "$EXISTING" != "$DEST" ]; then
+  echo "A statusLine is already set in $SETTINGS:"
+  echo "    $EXISTING"
+  echo
+  echo "Leaving it alone. To switch, set it to:"
+  echo "    $DEST"
+  exit 0
+fi
+
+TMP=$(mktemp)
+jq --arg cmd "$DEST" '.statusLine = {"type":"command","command":$cmd}' "$SETTINGS" > "$TMP"
+mv "$TMP" "$SETTINGS"
+
+echo "Installed: $DEST"
+echo "Configured: $SETTINGS"
+echo
+echo "Start a new session to see it. Cost appears on Bedrock and DeepSeek;"
+echo "set CLAUDE_STATUSLINE_COST=always to force it."

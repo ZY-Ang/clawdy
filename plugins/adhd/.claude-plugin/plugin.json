@@ -1,0 +1,11 @@
+{
+  "name": "adhd",
+  "description": "Shape every reply for a reader with ADHD and explain it like they are new to the topic: next action first, numbered steps, zero jargon, and never cutting the context needed to understand it.",
+  "version": "0.1.0",
+  "author": {
+    "name": "ZY-Ang"
+  },
+  "homepage": "https://github.com/ZY-Ang/clawdy/tree/main/plugins/adhd",
+  "repository": "https://github.com/ZY-Ang/clawdy",
+  "license": "MIT"
+}

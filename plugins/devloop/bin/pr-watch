@@ -1,0 +1,183 @@
+#!/bin/sh
+# Is this pull request actually ready, or does it just look finished?
+#
+#   pr-watch              # the PR for the current branch
+#   pr-watch 14           # a specific one
+#   pr-watch 14 --wait    # block until checks settle, then report
+#   pr-watch --all        # every open PR you own -- the loop tick's first step
+#
+# Exit codes, so a loop can branch on it:
+#   0  nothing left on your side -- mergeable, or green and waiting on a human
+#   1  not ready, with the reason on stdout
+#   2  could not tell (gh missing, no PR, API failure) -- never mistaken for ready
+#
+# Exit 0 is the "you may ask for review / press merge" signal, and the printed
+# line says which of the two it is. Exit 1 always names the thing to go fix.
+#
+# The point is that "ready for review" is a claim. This checks it. BEHIND and
+# UNSTABLE both look like success if you only glance at whether CI ran.
+#
+# Requires: gh (authenticated) and jq.
+
+set -eu
+
+FIELDS='number,title,isDraft,state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup'
+
+PR=""; WAIT=0; ALL=0
+for a in "$@"; do
+  case "$a" in
+    --wait) WAIT=1 ;;
+    --all)  ALL=1 ;;
+    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -*) echo "pr-watch: unknown option $a" >&2; exit 2 ;;
+    *) PR=$a ;;
+  esac
+done
+
+command -v jq >/dev/null || { echo "pr-watch: jq is not installed"; exit 2; }
+# The seam below stands in for gh, so only demand gh when we will really call it.
+if [ -z "${PR_WATCH_JSON:-}" ]; then
+  command -v gh >/dev/null || { echo "pr-watch: gh is not installed"; exit 2; }
+fi
+
+# Test seam: PR_WATCH_JSON names a file of gh-shaped JSON, so the gate logic can
+# be exercised without gh, without auth and without the network.
+fetch() {
+  if [ -n "${PR_WATCH_JSON:-}" ]; then cat "$PR_WATCH_JSON"; return 0; fi
+  if [ -n "$1" ]; then gh pr view "$1" --json "$FIELDS" 2>/dev/null
+  else gh pr view --json "$FIELDS" 2>/dev/null; fi
+}
+
+# statusCheckRollup mixes two shapes: CheckRun (.status/.conclusion) and
+# StatusContext (.state, no .status). Treating a StatusContext as "not
+# COMPLETED" would leave the PR pending forever, so normalise both here.
+SUMMARY_JQ='
+  def norm:
+    if .status != null
+    then (if .status != "COMPLETED" then "PENDING"
+          elif (.conclusion // "") as $c
+             | ($c == "FAILURE" or $c == "TIMED_OUT" or $c == "CANCELLED"
+                or $c == "STARTUP_FAILURE" or $c == "ACTION_REQUIRED")
+          then "FAIL" else "PASS" end)
+    else (.state // "" | if . == "PENDING" or . == "EXPECTED" then "PENDING"
+                         elif . == "FAILURE" or . == "ERROR" then "FAIL"
+                         else "PASS" end)
+    end;
+  # Tab is an IFS whitespace character, so the shell collapses a run of them and
+  # an empty field would silently shift every field after it. Nothing may be
+  # empty; "NONE" stands in, and @tsv escapes any tab inside the title itself.
+  def dash: if . == null or . == "" then "NONE" else . end;
+  [ .statusCheckRollup[]? | norm ] as $c
+  | [ (.number | dash), (.title | dash), (.state | dash),
+      (.isDraft // false), (.mergeable | dash),
+      (.mergeStateStatus | dash), (.reviewDecision | dash),
+      ([$c[] | select(. == "PENDING")] | length),
+      ([$c[] | select(. == "FAIL")]    | length),
+      ($c | length) ]
+  | @tsv'
+
+verdict() {
+  # One jq call, read positionally -- ten separate calls was ten forks per PR.
+  line=$(printf '%s' "$1" | jq -r "$SUMMARY_JQ" 2>/dev/null) || {
+    echo "pr-watch: could not parse the pull request JSON"; return 2; }
+  [ -n "$line" ] || { echo "pr-watch: empty pull request JSON"; return 2; }
+
+  # Tab-separated, so a title containing spaces survives the split.
+  oldifs=$IFS; IFS='	'
+  # shellcheck disable=SC2086
+  set -- $line
+  IFS=$oldifs
+  num=$1 title=$2 state=$3 draft=$4 mrg=$5 msg=$6 rev=$7
+  pending=$8 failed=$9 total=${10}
+  [ "$title" = "NONE" ] && title=""
+  [ "$rev" = "NONE" ] && rev=""
+  [ "$num" = "NONE" ] && num="?"
+  true
+
+  printf '#%s %s\n' "$num" "$title"
+  printf '  state %s · draft %s · mergeable %s · %s · checks %s/%s passed' \
+    "$state" "$draft" "$mrg" "$msg" "$((total - pending - failed))" "$total"
+  if [ -n "$rev" ]; then printf ' · review %s' "$rev"; fi
+  printf '\n'
+
+  if [ "$state" != "OPEN" ]; then
+    echo "  NOT READY — state is $state"; return 1; fi
+  if [ "$draft" != "false" ]; then
+    echo "  NOT READY — still a draft; a draft is not a request"; return 1; fi
+  if [ "$failed" -ne 0 ]; then
+    echo "  NOT READY — $failed check(s) failing. Read the log, fix, push"; return 1; fi
+  if [ "$pending" -ne 0 ]; then
+    echo "  NOT READY — $pending check(s) still running. Pending is not a pass"; return 1; fi
+  if [ "$rev" = "CHANGES_REQUESTED" ]; then
+    echo "  NOT READY — changes requested; address them, then reply saying what you changed"; return 1; fi
+
+  case "$mrg" in
+    MERGEABLE) ;;
+    CONFLICTING)
+      echo "  NOT READY — conflicts; merge the base branch and push"; return 1 ;;
+    *)
+      echo "  NOT READY — mergeable is $mrg; GitHub has not finished computing it, re-poll"; return 1 ;;
+  esac
+
+  case "$msg" in
+    CLEAN)
+      if [ "$rev" = "APPROVED" ] || [ -z "$rev" ]; then
+        echo "  READY TO MERGE — every gate passed"
+      else
+        echo "  READY FOR REVIEW — every gate passed; review is $rev"
+      fi
+      return 0 ;;
+    HAS_HOOKS)
+      echo "  READY TO MERGE — green; a pre-receive hook still runs on merge"; return 0 ;;
+    BLOCKED)
+      # BLOCKED with everything green means the only thing left is a human.
+      # That is exactly when asking for review is correct, so it is not a
+      # failure -- but say so explicitly rather than reporting a bare "ready".
+      if [ "$rev" = "REVIEW_REQUIRED" ] || [ -z "$rev" ]; then
+        echo "  READY FOR REVIEW — checks green and no conflicts; blocked only on a required review"
+        return 0
+      fi
+      echo "  NOT READY — BLOCKED with review $rev: a required check or ruleset is unmet."
+      echo "              Name which one; do not just ask for review"; return 1 ;;
+    BEHIND)
+      echo "  NOT READY — BEHIND: the base moved. Update the branch, then wait for CI again"; return 1 ;;
+    UNSTABLE)
+      echo "  NOT READY — UNSTABLE: a check is failing or still running"; return 1 ;;
+    DIRTY)
+      echo "  NOT READY — DIRTY: conflicts with the base branch"; return 1 ;;
+    DRAFT)
+      echo "  NOT READY — still a draft; a draft is not a request"; return 1 ;;
+    *)
+      echo "  NOT READY — mergeStateStatus is $msg; re-poll rather than assuming"; return 1 ;;
+  esac
+}
+
+if [ "$ALL" -eq 1 ]; then
+  nums=$(gh pr list --author "@me" --state open --json number -q '.[].number' 2>/dev/null) || {
+    echo "pr-watch: could not list pull requests"; exit 2; }
+  [ -n "$nums" ] || { echo "No open pull requests."; exit 0; }
+  rc=0
+  for n in $nums; do
+    j=$(fetch "$n") || j=""
+    if [ -z "$j" ]; then
+      echo "#$n — could not read"; rc=2; echo; continue
+    fi
+    # set -e must not fire on a NOT READY verdict; it is an answer, not an error.
+    v=0; verdict "$j" || v=$?
+    if [ "$v" -ne 0 ] && [ "$rc" -ne 2 ]; then rc=$v; fi
+    echo
+  done
+  exit "$rc"
+fi
+
+if [ "$WAIT" -eq 1 ] && [ -z "${PR_WATCH_JSON:-}" ]; then
+  # gh already implements the waiting. Its exit status is informational here --
+  # the verdict below decides, not this call.
+  if [ -n "$PR" ]; then gh pr checks "$PR" --watch >/dev/null 2>&1 || true
+  else gh pr checks --watch >/dev/null 2>&1 || true; fi
+fi
+
+J=$(fetch "$PR") || J=""
+[ -n "$J" ] || { echo "pr-watch: no pull request found"; exit 2; }
+rc=0; verdict "$J" || rc=$?
+exit "$rc"
