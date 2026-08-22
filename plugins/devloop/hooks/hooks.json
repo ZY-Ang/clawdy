@@ -1,0 +1,16 @@
+{
+  "description": "Remind to arm a watcher on a PR at the moment it is opened.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/pr-open-reminder",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -1,0 +1,35 @@
+#!/bin/sh
+# PostToolUse: when a PR is opened, remind that a watcher belongs on it.
+#
+# Prose did not hold: the rule "arm a watcher on every open PR you own" is
+# written in the skill, and the first PRs opened after it went unwatched. A
+# reminder at the exact moment of opening costs one line and cannot be missed.
+#
+# This hook only reminds. It cannot check whether a monitor was armed -- that
+# is a Claude-side construct invisible to a shell -- so it never blocks.
+
+INPUT=$(cat 2>/dev/null || true)
+
+tool=$(printf '%s' "$INPUT" | sed -n 's/.*"tool_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+[ "$tool" = "Bash" ] || exit 0
+
+command -v jq >/dev/null 2>&1 || exit 0
+cmd=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null)
+
+# Segment-start match, so prose mentioning gh pr create inside a heredoc does
+# not fire.
+gated=$(printf '%s' "$cmd" \
+  | tr ';\n' '\a\a' | sed 's/&&/\a/g; s/||/\a/g; s/|/\a/g' | tr '\a' '\n' \
+  | sed 's/^[[:space:]]*//' \
+  | grep -cE '^(sudo[[:space:]]+)?gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)')
+[ "${gated:-0}" -gt 0 ] || exit 0
+
+cat <<'JSON'
+{
+  "hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "permissionDecision": "allow",
+    "permissionDecisionReason": "PR opened -- arm a persistent watcher on it now (devloop skill: 'Arm a watcher on every open PR you own')."
+  }
+}
+JSON
