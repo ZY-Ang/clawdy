@@ -14,14 +14,13 @@
 # human replied?" mechanically checkable, which is what `check-replies` and the
 # loop's pick-up step depend on.
 #
-# On GitHub this matters more than it does on GitLab. There, agent and human
-# post under different usernames, so the author alone distinguishes them. Here
-# an agent posts through the human's own token, so **every comment has the same
-# author** and the prefix is the only signal there is.
+# On backends where agent and human post under different usernames, the author
+# alone distinguishes them. On GitHub an agent posts through the human's own
+# token, so **every comment has the same author** and the prefix is the only
+# signal there is.
 #
 # Add if missing, never reject. A guard that refuses the call teaches agents to
 # route around it; one that quietly does the right thing cannot be forgotten.
-# Mirrors `glab-mr-note`, which does exactly this with its "_ " prefix.
 
 AGENT_MARK='🤖'
 

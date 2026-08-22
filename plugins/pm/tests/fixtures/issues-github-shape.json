@@ -151,7 +151,7 @@
   },
   {
     "number": 175,
-    "title": "Delete /volume1/docker/wb-zy/tmp-ha-config-copy, or keep it?",
+    "title": "Delete /tmp/stale-config-copy, or keep it?",
     "state": "OPEN",
     "labels": [
       {

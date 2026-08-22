@@ -14,6 +14,14 @@
 # it is not part of the normal suite, and it skips loudly rather than silently
 # when PM_LIVE_REPO is unset. In CI it exits 0 on the skip line.
 #
+# NOT RUN AGAINST GITHUB, DELIBERATELY. Automating issue and pull request
+# creation on github.com -- even in a throwaway repo -- is synthetic traffic
+# GitHub's terms do not permit, so this suite has never run live against
+# GitHub. That is a known testing gap: the #45 class of bug is exactly what it
+# exists to catch, and exactly what no fixture can. It remains the acceptance
+# test for any provider whose terms allow it -- PM_PROVIDER selects one, and
+# the contract rather than GitHub is what gets exercised.
+#
 # It drives the binaries and reads everything back through the provider seam,
 # asserting the ROUND TRIP, not the exit code. backlog-link once exited 2
 # correctly while being completely broken; what distinguished working from

@@ -1,7 +1,7 @@
 # The GitHub provider. One of these per backend.
 #
-# Everything above this line in the call stack works on a normalised shape, so a
-# `glab` or JIRA adapter is a new file implementing the same four functions
+# Everything above this line in the call stack works on a normalised shape, so
+# an adapter for another backend is a new file implementing the same functions
 # rather than a rewrite.
 #
 # The plugin is `pm`, not `gh-pm`, deliberately: a backend in the name is the one

@@ -72,6 +72,70 @@ spelling — do not assume one shape and silently read `undefined`.
 If something fails, say what and what you are doing about it. "CI red on `test`, fixing" is
 useful. "Ready for review" when it is not is worse than silence.
 
+## A verdict goes stale the moment the base moves
+
+"READY TO MERGE" is a fact about a moment, not a property of the PR. The base branch moving
+after the check flips `mergeStateStatus` to `BEHIND`, GitHub grays out the merge button, and a
+human looking at the PR sees it unmergeable — while the last thing the agent said was "ready".
+That is exactly what happened to #68: the verdict was printed, another PR merged, and the
+human's button went gray.
+
+- **Every report of a PR's state carries its evidence** — the `pr-watch` line, not the bare
+  words. A verdict with no check behind it is a rumour, and a stale one is a lie with a
+  timestamp.
+- **When a human says "not mergeable" or "the button is grayed", diagnose; never re-assert.**
+  The button is the ground truth. Read `mergeStateStatus` first, then fix what it names:
+  `BEHIND` — merge the base branch in, push, wait for CI, re-report; `DIRTY` — resolve;
+  `UNSTABLE` — fix the check; `BLOCKED` — say *which* check or ruleset. The `BEHIND` fix is
+  mechanical and needs no permission.
+- **The verdict expires at every merge to the base, yours included.** After anything lands on
+  `main`, re-check before repeating the word "ready" — including for a PR you reported ready
+  moments ago. Between your check and the human's click, `main` is the only thing that moves,
+  and it is the thing that grays the button.
+
+## The loop, numbered
+
+The steps are the contract; the tool names are local to this repository.
+
+1. Make changes on a non-main branch.
+2. Push the branch to the remote.
+3. Create the PR if one does not exist (`gh pr create`), or push to the existing one.
+4. After **every** push, run `pr-watch <n> --wait` — **always dispatched as a background Bash
+   call (`run_in_background: true`), never as the foreground main process.** The check can
+   block until CI settles; foreground use deadlocks the agent and burns context. Background
+   pattern:
+   - Bash with `run_in_background: true` returns a task ID immediately.
+   - The agent keeps working (reply to the operator, fan out subagents, draft fixes) while CI
+     runs.
+   - When the command exits, the harness delivers a `<task-notification>` — no polling, no
+     sleep loops.
+   - Read the **full output** when the notification arrives before deciding on step 5+.
+   - `pr-watch` exits `0` when nothing is left on your side, `1` naming the reason and its fix,
+     `2` when it could not tell. Exit `0` prints which of two situations you are in — READY TO
+     MERGE or READY FOR REVIEW — and that line is the only licence to use those words.
+
+   Mergeability is not the same as "may merge". Pick per task, don't default blindly:
+   - **merge without asking** — routine, low-risk, reversible changes: image/tag bumps, lint
+     fixes, dependency bumps, docs, test-only changes, anything already agreed this session.
+   - **stop at ready and ask** — anything the operator should eyeball first: new features or
+     behaviour changes, security/auth/policy, config, schema and data migrations, deletions,
+     cross-repo or breaking changes, or when the PR resolved a discussion by judgement rather
+     than a mechanical fix.
+   - When genuinely unsure, stop at ready and say why in the status report — stopping costs one
+     review round, merging the wrong thing costs a revert.
+5. **CRITICAL: do not reply to any discussion until you have actually made and pushed the
+   fix.** Never "will do", "will fix", "will update" — the reply describes what you *already
+   did*, not what you intend to do. Sequence: change, commit, push, *then* reply. See "Never
+   reply 'will fix'".
+6. For each open discussion: **bot threads** — fix it or justify why it is a non-issue, then
+   resolve; if the finding contradicts an operator instruction or a documented project
+   decision, do not silently comply — reply explaining the conflict, leave it unresolved, flag
+   it. **Human threads** — fix it and reply describing the change, but do not resolve; the
+   human's disagreement is their call to close.
+7. After addressing discussions — whether by pushing code or replying in-thread — go back to
+   step 4.
+8. Repeat until `pr-watch` exits `0` (mergeable, or merged).
+
 ## Fan out; do not serialise work that has no dependency
 
 Independent issues go to **subagents in their own `git worktree` checkouts and their own
@@ -264,6 +328,41 @@ Mark every reply and every PR description with the agent emoji — `reply-issue`
 
 **Human threads** — fix it and reply describing the change, but do **not** resolve. Resolving
 someone else's thread takes away their chance to disagree.
+
+## A thread is done only when your reply is the last word
+
+Review feedback is not discharged by replying — it is discharged by being the last person to
+speak. Three rules, and the third is the one that fails silently:
+
+- **"Addressed" means your marked reply is the latest comment in the thread.** A reviewer who
+  answers after you reopens the thread, even if the fix landed — so each tick re-reads the
+  threads you already posted in, not just new ones. The agent mark is what tells your last
+  word from anyone else's; this is the same last-word test `check-replies` applies to
+  `needs-human` issues.
+- **Unaddressed threads pre-empt everything, CI included.** Read the threads *before* waiting
+  on a pipeline: `gh api repos/{o}/{r}/pulls/{n}/comments` for inline threads, plus the
+  general comments. If any thread's last word is not yours, a green pipeline proves nothing —
+  fix, push, then re-check. Waiting for CI while review feedback stands is the waste the
+  readiness gate exists to prevent.
+- **Resolved means resolved on the platform, not in prose.** Where the host has a resolve
+  action on threads, bot threads get resolved by you after the fix and human threads never
+  do. A comment that says "done" without the resolution state discharges nothing.
+
+## Arm a watcher on every open PR you own
+
+The platform notifies you of failures, review comments and merges — but only while a session
+is listening, and nothing is listening by default. **After opening a PR, arm a persistent
+monitor on it** so review activity re-enters the loop without a human poke:
+
+- poll the PR's state, inline comments, reviews and general comments every couple of minutes,
+  and emit **only when something changed** — a state file holding the last snapshot makes the
+  watch silent between changes;
+- each emitted line becomes a notification that wakes the turn, which then runs the thread
+  rules above.
+
+That is the mechanism that makes "answer review threads" a loop step that actually fires
+rather than a step that waits for someone to type. `pr-watch --wait` covers the CI wait; the
+persistent watcher covers everything that happens *between* waits.
 
 ## Long checks run in the background
 

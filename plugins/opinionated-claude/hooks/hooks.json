@@ -1,5 +1,5 @@
 {
-  "description": "Refuse to end a turn that asks permission for implied work, or that announces work instead of doing it.",
+  "description": "Refuse to end a turn that asks permission for implied work, announces work instead of doing it, or cites work by bare number instead of a link.",
   "hooks": {
     "Stop": [
       {
@@ -12,6 +12,11 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/no-announced-work",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/no-bare-refs",
             "timeout": 10
           }
         ]

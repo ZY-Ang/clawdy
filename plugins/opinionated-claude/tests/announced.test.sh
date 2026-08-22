@@ -143,6 +143,12 @@ P="The suite is running; I will report when it lands."
 armed   "a real Monitor call exempts it"      Monitor                '{}'                       "$P"
 armed   "so does send_later"                  mcp__x__send_later     '{}'                       "$P"
 armed   "so does a backgrounded Bash"         Bash                   '{"run_in_background":true}' "$P"
+# A subagent runs in the background and notifies on completion -- the same
+# return path as the other three. Task is Claude Code's name for the call.
+# (#69: the list once omitted it, and a turn with a review agent genuinely in
+# flight was blocked.)
+armed   "so does a background agent"          Agent                  '{}'                       "$P"
+armed   "so does Claude Code's Task call"     Task                   '{}'                       "$P"
 unarmed "the same sentence, nothing armed"    ""                     '{}'                       "$P"
 unarmed "a FOREGROUND Bash is not a return path" Bash                '{"run_in_background":false}' "$P"
 unarmed "claiming 'Monitor armed' is not arming one" "" '{}' "Monitor armed.

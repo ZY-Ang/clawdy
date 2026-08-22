@@ -112,6 +112,12 @@ It also refuses to run against a repo whose name does not say `scratch`
 (`PM_LIVE_FORCE=1` overrides), because it closes issues in whatever it is
 pointed at.
 
+**Never point it at GitHub.** Automating issue and pull request creation there —
+even in a throwaway repo — is synthetic traffic GitHub's terms do not permit, so
+the suite has never run against GitHub. That is a known gap, and it is
+deliberate: the suite is the acceptance test for a provider whose backend terms
+allow it, not a GitHub regression test.
+
 ## Three assumptions that are GitHub's, not the contract's
 
 These are real limits. If any blocks you, that is a bug in the contract, not in your file.

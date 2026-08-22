@@ -94,6 +94,11 @@ ARMED=$(jq -rs '
       | select(
             (.name | test("send_later|CronCreate|ScheduleWakeup|^Monitor$"))
             or (.name == "Bash" and (.input.run_in_background == true))
+            # A launched subagent is a backgrounded execution too: it notifies
+            # on completion. Task is the name Claude Code uses for the same
+            # call. (#69: the list once omitted it, and a turn with a review
+            # agent genuinely in flight was blocked as announcing work.)
+            or (.name | test("^(Agent|Task)$"))
         )
       | .name ]
   | length

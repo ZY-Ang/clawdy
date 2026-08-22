@@ -45,6 +45,11 @@ skips loudly when unset. It exists because a fixture cannot catch a wrong scalar
 type in a request body — #45 passed every test and 422'd against every real
 repository.
 
+It has never run against GitHub, deliberately: automating issue and pull request
+creation there may violate GitHub's terms. It is the acceptance test for a
+provider whose backend terms allow such traffic — a known gap, documented in
+the suite header rather than hidden.
+
 **Pin both directions.** A check that only ever fires is indistinguishable from one
 that always fires. Most bugs found here were found by the negative case.
 

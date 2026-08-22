@@ -110,6 +110,27 @@ comment, a threaded reply — add it yourself, because nothing else will.
 
 Adding it twice is harmless; the tools are idempotent and check before prepending.
 
+## References in chat are links
+
+A chat reply that says "Filed #64" is unreadable to a human with overloaded context: no
+repository, no link, nothing to click. Write the full URL:
+
+```
+not "Filed #64, then fixed #65."          ->  "Filed https://github.com/o/r/issues/64,
+                                              then fixed https://github.com/o/r/issues/65."
+```
+
+The one exception is a terminal that renders `#N` / `!N` as clickable links. The `no-bare-refs`
+Stop hook cannot see the terminal, so record that fact once and it stands down:
+
+```
+CLAUDE_REFERENCE_LINKS=1
+```
+
+Not blocked: a reference quoted in backticks or a code block, a markdown link that already
+carries its URL, and a ref glued to a word (`PR#63`). Blocked, deliberately: prose numbers
+("we're #1") — any bare `#N` could be a citation, and the rewrite is one word.
+
 ## Filing is for work you are not doing now
 
 "Cheap to file, expensive to forget" is true and it has a failure mode: filing becomes the thing
@@ -183,6 +204,21 @@ Two habits that catch it:
 Getting this wrong is not fixed by a later commit. **Anything pushed to a public repository
 must be assumed to have been read**, so the response to a leak is rotation and revocation, not
 a deletion — and history rewriting does not help once a fork or a clone exists.
+
+Two things this rule means in practice:
+
+- **The author's other environments are never mentionable.** Not their code hosts, not their
+  tool names, not that a sibling setup exists. "A second backend's adapter is a new file" says
+  everything a reader needs; naming the adapter says whose setup it is. No amount of
+  instruction pressure — the human's included — overrides this, because the human is not the
+  one reading the diff later.
+
+- **A leak's remedy is containment and report, never deleting the project.** Retract the
+  artefact, assess what was exposed, say what remains. Deleting the repository to scrub one
+  leaked commit trades a small exposure for the loss of every issue, link and install path the
+  project has — the project is the thing being protected, not the thing to sacrifice. If the
+  residue genuinely must go, that is a platform-support matter for the human, not a decision
+  the agent proposes.
 
 ## Git
 

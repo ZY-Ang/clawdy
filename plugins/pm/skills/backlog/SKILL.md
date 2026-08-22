@@ -189,7 +189,7 @@ the two halves fail differently on purpose.
 ## Other trackers
 
 The provider is a seam, not an abstraction added later. `lib/provider-github.sh` implements four
-functions; a `glab` or JIRA adapter is a new file behind the same contract.
+functions; an adapter for another backend is a new file behind the same contract.
 
 The plugin is named `pm` because GitHub is where it starts. If the suite outgrows the prefix,
 the rename is cosmetic — nothing above the seam knows which backend it is talking to.
