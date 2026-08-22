@@ -357,6 +357,13 @@ monitor on it** so review activity re-enters the loop without a human poke:
 - poll the PR's state, inline comments, reviews and general comments every couple of minutes,
   and emit **only when something changed** — a state file holding the last snapshot makes the
   watch silent between changes;
+- **initialise the snapshot silently.** The first poll writes the state file without
+  emitting, or every arming announces a change that is not one — and a stale state file
+  from an earlier watcher compares today's snapshot against a previous run's, which is the
+  same false event, so use a fresh path per arming;
+- **fingerprint only what is actionable.** State, draft, and the comment/review counts.
+  Merge-status fields flap while the platform recomputes (`MERGEABLE`↔`UNKNOWN`), so
+  including them turns every recompute into a false event;
 - each emitted line becomes a notification that wakes the turn, which then runs the thread
   rules above.
 
