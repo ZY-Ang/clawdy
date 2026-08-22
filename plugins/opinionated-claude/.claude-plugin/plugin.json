@@ -1,7 +1,7 @@
 {
   "name": "opinionated-claude",
   "description": "Install working conventions into your CLAUDE.md: act autonomously instead of asking permission to push, keep private infrastructure detail out of public repositories, keep changes surgical, and never claim something is verified without evidence.",
-  "version": "0.15.0",
+  "version": "0.16.0",
   "author": {
     "name": "ZY-Ang"
   },
