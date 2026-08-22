@@ -366,7 +366,16 @@ aggressively:
 - the ids are the events; nothing else is. Do not snapshot state and diff it — a
   state-diff watcher sleeps through the events themselves and wakes only when a bucket
   changes, which under-fires in exactly the way a webhook never does. Noise suppression
-  belongs to the turn that receives the event, not to the watcher.
+  belongs to the turn that receives the event, not to the watcher;
+- **seed every stream on arming** — timeline ids *and* the existing check-run ids go into
+  the state file silently, or the first poll replays the past as events;
+- **one thing has no event: the base moving under the PR.** A merge to main makes every
+  open PR stale without emitting a single event on any of them — no comment, no review, no
+  check run, and webhooks see it no better. So the watcher polls the PR's own
+  `mergeStateStatus` as a third signal and emits when it enters the actionable set —
+  `BEHIND`, `UNSTABLE`, `DIRTY`, `BLOCKED` — with `CLEAN`/`UNKNOWN`/absent treated as one
+  silent "steady" bucket so recomputes stay quiet. A watcher without this third signal
+  watches everything except the one thing that grays the merge button.
 
 That is the mechanism that makes "answer review threads" a loop step that actually fires
 rather than a step that waits for someone to type. `pr-watch --wait` covers the CI wait; the
