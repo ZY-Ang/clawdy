@@ -169,9 +169,18 @@ printf '[{"number":7,"title":"unlabelled","state":"OPEN","labels":[{"name":"task
 out=$(BACKLOG_ISSUES_JSON=$flat BACKLOG_NOW=1787184000 sh "$BIN" --why 2>&1)
 case "$out" in *"UNTRIAGED: priority,urgency,size"*) ok "--why names the axes it guessed" ;;
   *) bad "--why names the axes it guessed" "$out" ;; esac
-# The fully-labelled row must NOT carry the line, or it means nothing.
-lab=$(printf '%s\n' "$out" | grep -A2 '^#8 ' | grep -c 'UNTRIAGED:' || true)
+# The fully-labelled row must NOT carry either half of the note, or the note
+# means nothing. The old check grepped only for "UNTRIAGED:" and missed the
+# tail -- "anyone ranked it" -- printing under every ranked row (#2): asserting
+# one half of a two-line message while the other half leaks is how this bug
+# shipped under a green suite.
+lab=$(printf '%s\n' "$out" | grep -A2 '^#8 ' | grep -c 'UNTRIAGED:\|anyone ranked' || true)
 [ "$lab" -eq 0 ] && ok "and says nothing on a fully-labelled row" || bad "the note leaks onto labelled rows" "$out"
+# And the leak's exact symptom, pinned: the untriaged tail must appear only on
+# the untriaged row.
+tail_count=$(printf '%s\n' "$out" | grep -c 'anyone ranked' || true)
+[ "$tail_count" -eq 1 ] && ok "the 'anyone ranked' tail appears exactly once" \
+  || bad "the untriaged tail prints $tail_count times" "$out"
 # Empty field, tab-split: the bug that has cost this repo two sessions.
 # The key gained a digit when untriaged became the second component: #8 is
 # triaged, so 1 -- and #7 is not, which is why it now sorts first.
