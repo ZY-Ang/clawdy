@@ -139,6 +139,10 @@ either -- file it and carry on:
   ask-async "<the question>" --blocked-on decision --irreversible "<why>" \\
     --context "<what you were doing>" --assume "<what you are doing meanwhile>"
 
-Only for something irreversible or outside what was asked: CLAUDE_ALLOW_ASKING=1
+A message that merely MENTIONS a guarded phrase trips this guard too -- it cannot
+tell a mention from a use. Writing about the guard is exactly what the escape
+is for:
+
+  CLAUDE_ALLOW_ASKING=1
 MSG
 exit 2
