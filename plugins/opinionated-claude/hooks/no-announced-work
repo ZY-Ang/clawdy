@@ -223,6 +223,10 @@ return path is a plan. A promise without one is a dropped thread.
 Telling the HUMAN what to do next is fine and is not what this blocks; only a
 first-person promise about your own next action is.
 
-Deliberately writing about this guard: CLAUDE_ALLOW_ASKING=1
+A message that merely MENTIONS a guarded phrase trips this guard too -- it cannot
+tell a mention from a use. Writing about the guard is exactly what the escape
+is for:
+
+  CLAUDE_ALLOW_ASKING=1
 MSG
 exit 2

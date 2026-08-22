@@ -218,8 +218,12 @@ printf '%s\n' "$OUT" | while IFS="$TAB" read -r _state key num why sev eff base 
     # Say when a key was guessed rather than read. A backlog with no axes ranks
     # FLAT -- everything ties and falls through to issue number -- and without
     # this line that looks identical to a ranking.
-    [ "$defaulted" != "-" ] && \
+    # Both lines belong to the untriaged row. The second once sat outside the
+    # conditional, so its tail printed under EVERY row, ranked ones included --
+    # a backlog where everything "anyone ranked" reads like nothing was ranked.
+    if [ "$defaulted" != "-" ]; then
       printf '        UNTRIAGED: %s not supplied. It is here to be classified, not because\n' "$defaulted"
       printf '        anyone ranked it -- the priority shown is a default, not a decision.\n'
+    fi
   fi
 done

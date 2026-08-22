@@ -187,6 +187,9 @@ out=$(printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/n
 case "$out" in *'Filed #41 and #42'*) ok "shows the replacement phrasing" ;; *) bad "replacement phrasing" ;; esac
 case "$out" in *'arm something'*) ok "and the escape for work that cannot finish" ;; *) bad "names the arming escape" ;; esac
 case "$out" in *HUMAN*) ok "and says telling the human is not what it blocks" ;; *) bad "names the human exemption" ;; esac
+# The mention case: a message ABOUT the guard trips it, and the block must say
+# so at the point of failure rather than leaving the agent to guess (#4).
+case "$out" in *'merely MENTIONS'*) ok "and says a mention trips it too" ;; *) bad "and says a mention trips it too" ;; esac
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
