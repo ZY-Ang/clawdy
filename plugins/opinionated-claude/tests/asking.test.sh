@@ -160,6 +160,10 @@ printf '%s' "Want me to?" | jq -Rs '{type:"assistant",message:{content:[{type:"t
 out=$(printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/null)
 case "$out" in *'Pushed, PR #12'*) ok "shows the replacement phrasing" ;; *) bad "shows the replacement phrasing" ;; esac
 case "$out" in *ask-async*) ok "and the escape for a real blocker" ;; *) bad "and the escape for a real blocker" ;; esac
+# The mention case: a message ABOUT the guard trips it, and the block must say
+# so at the point of failure rather than leaving the agent to guess (#4).
+case "$out" in *'merely MENTIONS'*) ok "and says a mention trips it too" ;; *) bad "and says a mention trips it too" ;; esac
+case "$out" in *'CLAUDE_ALLOW_ASKING=1'*) ok "and names the escape as the intended out" ;; *) bad "and names the escape as the intended out" ;; esac
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
