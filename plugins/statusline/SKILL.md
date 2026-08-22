@@ -72,7 +72,7 @@ All optional, all environment variables.
 | `CLAUDE_STATUSLINE_COST` | `auto` | `auto` shows cost on Bedrock and DeepSeek only · `always` · `never` |
 | `CLAUDE_STATUSLINE_CURRENCY` | `$` | Symbol to print |
 | `CLAUDE_STATUSLINE_FX_RATE` | `1` | Multiplier applied to the USD figure (comma or dot decimal) |
-| `CLAUDE_STATUSLINE_DEEPSEEK_RATE` | `auto` | `auto` (Beijing peak 09–12, 14–18) · `peak` · `offpeak` |
+| `CLAUDE_STATUSLINE_DEEPSEEK_RATE` | `auto` | `auto` (weekday Beijing peak 09–12, 14–18) · `peak` · `offpeak` |
 
 Billing yourself in another currency:
 
@@ -94,9 +94,9 @@ DeepSeek ids are priced from the public rate card ([api-docs.deepseek.com](https
 | `deepseek-v4-flash-vision-exp` (same as flash) | $0.22 | $0.66 |
 | `deepseek-v4-pro` | $0.66 | $1.98 |
 
-Peak is exactly 2× off-peak, and peak hours are Beijing time 09:00–12:00 and 14:00–18:00. The
-tier is picked from the current clock — set `CLAUDE_STATUSLINE_DEEPSEEK_RATE=peak` (or
-`offpeak`) to pin it.
+Peak is exactly 2× off-peak, and peak hours are Beijing time 09:00–12:00 and 14:00–18:00 on
+weekdays; weekends (Sat–Sun, Beijing time) are all off-peak. The tier is picked from the
+current clock — set `CLAUDE_STATUSLINE_DEEPSEEK_RATE=peak` (or `offpeak`) to pin it.
 
 Every input token is priced at the cache-miss rate. The session totals don't break cache hits
 out, so a session with DeepSeek's automatic context caching costs less than shown — the figure
@@ -157,5 +157,6 @@ cost as the delta.
 
 **`turn:` shows a jump or a negative.** The baseline is stored in USD at the tier of the render
 that advanced it, so a delta spanning a DeepSeek peak/off-peak boundary includes the rate
-difference, and a state reset (like `/clear`) can print a negative delta until the next turn.
-Both are display artifacts, not billing errors.
+difference — most visibly the first turn after a weekend starts — and a state reset (like
+`/clear`) can print a negative delta until the next turn. Both are display artifacts, not
+billing errors.

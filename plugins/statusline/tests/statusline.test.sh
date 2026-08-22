@@ -13,15 +13,19 @@ mkdir -p "$TMP/bin" "$TMP/state" "$TMP/tx"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 # A PATH containing only what the script uses, so the host's real tools
-# cannot leak in. date is faked: the script calls `date -u +%H` exactly once,
-# and only for the auto tier.
+# cannot leak in. date is faked to answer `date -u '+%H %w'`.
 for b in cat jq awk tr sh; do
   src=$(command -v "$b") || { echo "statusline.test: $b not found on this host" >&2; exit 1; }
   ln -sf "$src" "$TMP/bin/$b"
 done
 cat > "$TMP/bin/date" <<'EOF'
 #!/bin/sh
-printf '%s\n' "${FAKE_UTC_HOUR:-02}"
+# The script's one date call. Anything else is a contract break; run()
+# captures stderr, so a break fails the assertions with the diagnostic.
+case "$*" in
+  '-u +%H %w') printf '%s %s\n' "$FAKE_UTC_HOUR" "$FAKE_UTC_DOW" ;;
+  *) echo "date called with: $*" >&2; exit 1 ;;
+esac
 EOF
 chmod +x "$TMP/bin/date"
 
@@ -32,14 +36,16 @@ bad() { ran=$((ran+1)); fails=$((fails+1)); printf 'FAIL %s\n' "$1"; [ -n "${2:-
         # bad's last command fails, which it does whenever $2 is absent.
         return 0; }
 
-# Case knobs, reset before every case; run() exports them.
+# Case knobs, reset before every case; run() exports them. The default clock
+# is Wed 02:00 UTC = Beijing 10:00 -- a weekday peak hour, the tier a case
+# that forgets to set the clock should trip over.
 reset_knobs() {
-  DSR=auto CUR='$' FX=1 MODE=auto USE_BEDROCK=0 FAKE_UTC_HOUR=02
+  DSR=auto CUR='$' FX=1 MODE=auto USE_BEDROCK=0 FAKE_UTC_HOUR=2 FAKE_UTC_DOW=3
 }
 
 run() {
   printf '%s' "$1" |
-    PATH="$TMP/bin" TMPDIR="$TMP/state" FAKE_UTC_HOUR="${FAKE_UTC_HOUR:-02}" \
+    PATH="$TMP/bin" TMPDIR="$TMP/state" FAKE_UTC_HOUR="${FAKE_UTC_HOUR:-2}" FAKE_UTC_DOW="${FAKE_UTC_DOW:-3}" \
     CLAUDE_STATUSLINE_DEEPSEEK_RATE="${DSR:-auto}" \
     CLAUDE_STATUSLINE_CURRENCY="${CUR:-\$}" CLAUDE_STATUSLINE_FX_RATE="${FX:-1}" \
     CLAUDE_STATUSLINE_COST="${MODE:-auto}" CLAUDE_CODE_USE_BEDROCK="${USE_BEDROCK:-0}" \
@@ -89,46 +95,38 @@ got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 1000000 c5 '')")
 assert "v4-pro peak: 2x off-peak" \
   '[deepseek-v4-pro[1m]] 42% context | in:1.0M out:1.0M | total: $5.28 | turn: +$0.0000' "$got"
 
-# --- auto tier against a faked wall clock (UTC -> Beijing = +8) ---------------
-reset_knobs; FAKE_UTC_HOUR=01
-got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 0 a1 '')")
-assert "auto 01 UTC (Beijing 09): peak" \
-  '[deepseek-v4-pro[1m]] 42% context | in:1.0M out:0 | total: $1.32 | turn: +$0.0000' "$got"
+# --- auto tier, table-driven over the faked clock ---------------------------
+# The script reads date -u '+%H %w' (UTC hour, UTC weekday; 0=Sun..6=Sat).
+# Beijing is UTC+8, and the +8 never crosses a date inside the peak windows,
+# so the UTC weekday is safe. 1M input at peak = $1.32, off-peak = $0.66.
+tier_case() { # <utc-hour> <utc-dow> <expected-total>
+  reset_knobs; FAKE_UTC_HOUR=$1; FAKE_UTC_DOW=$2
+  got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 0 "t$1$2" '')")
+  assert "UTC $1 dow $2: $3" \
+    "[deepseek-v4-pro[1m]] 42% context | in:1.0M out:0 | total: \$$3 | turn: +\$0.0000" "$got"
+}
 
-reset_knobs; FAKE_UTC_HOUR=02
-got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 0 a2 '')")
-assert "auto 02 UTC (Beijing 10): peak" \
-  '[deepseek-v4-pro[1m]] 42% context | in:1.0M out:0 | total: $1.32 | turn: +$0.0000' "$got"
-
-reset_knobs; FAKE_UTC_HOUR=06
-got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 0 a3 '')")
-assert "auto 06 UTC (Beijing 14): peak" \
-  '[deepseek-v4-pro[1m]] 42% context | in:1.0M out:0 | total: $1.32 | turn: +$0.0000' "$got"
-
-reset_knobs; FAKE_UTC_HOUR=09
-got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 0 a4 '')")
-assert "auto 09 UTC (Beijing 17): peak, inner edge" \
-  '[deepseek-v4-pro[1m]] 42% context | in:1.0M out:0 | total: $1.32 | turn: +$0.0000' "$got"
-
-reset_knobs; FAKE_UTC_HOUR=10
-got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 0 a5 '')")
-assert "auto 10 UTC (Beijing 18): off-peak, upper edge" \
-  '[deepseek-v4-pro[1m]] 42% context | in:1.0M out:0 | total: $0.66 | turn: +$0.0000' "$got"
-
-reset_knobs; FAKE_UTC_HOUR=04
-got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 0 a6 '')")
-assert "auto 04 UTC (Beijing 12): off-peak" \
-  '[deepseek-v4-pro[1m]] 42% context | in:1.0M out:0 | total: $0.66 | turn: +$0.0000' "$got"
-
-reset_knobs; FAKE_UTC_HOUR=11
-got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 0 a7 '')")
-assert "auto 11 UTC (Beijing 19): off-peak" \
-  '[deepseek-v4-pro[1m]] 42% context | in:1.0M out:0 | total: $0.66 | turn: +$0.0000' "$got"
-
-reset_knobs; FAKE_UTC_HOUR=00
-got=$(run "$(F 'deepseek-v4-pro[1m]' 1000000 0 a8 '')")
-assert "auto 00 UTC (Beijing 08): off-peak, lower edge" \
-  '[deepseek-v4-pro[1m]] 42% context | in:1.0M out:0 | total: $0.66 | turn: +$0.0000' "$got"
+tier_case 01 3 1.32   # Wed, Beijing 09: morning window opens
+tier_case 02 3 1.32   # Wed, Beijing 10
+tier_case 06 3 1.32   # Wed, Beijing 14: afternoon window opens
+tier_case 09 3 1.32   # Wed, Beijing 17: inner edge
+tier_case 10 3 0.66   # Wed, Beijing 18: peak ends
+tier_case 04 3 0.66   # Wed, Beijing 12: between windows
+tier_case 11 3 0.66   # Wed, Beijing 19
+tier_case 00 3 0.66   # Wed, Beijing 08: before peak
+tier_case 02 1 1.32   # Mon peak -- every weekday peaks
+tier_case 02 2 1.32   # Tue peak
+tier_case 02 4 1.32   # Thu peak
+tier_case 02 5 1.32   # Fri peak
+tier_case 01 6 0.66   # Sat, Beijing 09: weekend, morning window
+tier_case 06 6 0.66   # Sat, Beijing 14: weekend, afternoon window
+tier_case 02 0 0.66   # Sun, Beijing 10
+tier_case 06 0 0.66   # Sun, Beijing 14
+tier_case 09 0 0.66   # Sun, Beijing 17
+tier_case 01 1 1.32   # Mon, Beijing 09: peak again after the weekend
+tier_case 16 5 0.66   # Fri UTC 16 = Beijing Sat 00: +8 crosses the day
+tier_case 20 5 0.66   # Fri UTC 20 = Beijing Sat 04
+tier_case 23 0 0.66   # Sun UTC 23 = Beijing Mon 07
 
 # --- deepseek-v4-flash ---------------------------------------------------------
 reset_knobs; DSR=offpeak

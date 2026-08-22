@@ -13,8 +13,9 @@
 # something and the statusline is the right place for it.
 #
 # DeepSeek cost is computed from the token totals against the public rate
-# card: peak is 2x off-peak, Beijing peak hours 09-12 and 14-18. The table
-# and its caveats live in SKILL.md.
+# card: peak is 2x off-peak, weekday Beijing peak hours 09-12 and 14-18;
+# weekends are all off-peak. The table and its caveats live in SKILL.md.
+# All arithmetic is awk and the date formats are POSIX.
 #
 # Detection is deliberately narrow -- priced model ids only (Bedrock, DeepSeek
 # v4), or CLAUDE_CODE_USE_BEDROCK set. Anything unrecognised gets no cost,
@@ -106,13 +107,16 @@ case "$(lower "$MODEL_ID")" in
 esac
 
 if [ -n "$DEEPSEEK_IN" ]; then
-  # Beijing time (UTC+8); peak windows [9,12) and [14,18). A bad rate falls
-  # back to auto, a broken date to off-peak -- neither may fail the render.
+  # %w is UTC's weekday, which matches Beijing's inside the peak windows.
+  # Weekends are all off-peak; a bad rate falls back to auto, a broken
+  # date to off-peak -- neither fails the render.
   PEAK=0
   case "$DEEPSEEK_RATE" in
     peak)    PEAK=1 ;;
     offpeak) PEAK=0 ;;
-    *)       PEAK=$(date -u +%H 2>/dev/null | awk '{h=($1+8)%24; print ((h>=9&&h<12)||(h>=14&&h<18))?"1":"0"}') ;;
+    *)       PEAK=$(date -u '+%H %w' | awk '{
+               h=$1+8; dow=$2;
+               print (dow!=0 && dow!=6 && ((h>=9&&h<12)||(h>=14&&h<18)))?"1":"0"}') ;;
   esac
   COST_USD=$(awk -v i="$IN" -v o="$OUT" -v pi="$DEEPSEEK_IN" -v po="$DEEPSEEK_OUT" -v p="$PEAK" \
     'BEGIN{printf "%.10f", (i/1000000*pi + o/1000000*po) * (p=="1" ? 2 : 1)}')
