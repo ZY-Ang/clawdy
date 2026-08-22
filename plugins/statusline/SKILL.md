@@ -94,9 +94,10 @@ DeepSeek ids are priced from the public rate card ([api-docs.deepseek.com](https
 | `deepseek-v4-flash-vision-exp` (same as flash) | $0.22 | $0.66 |
 | `deepseek-v4-pro` | $0.66 | $1.98 |
 
-Peak is exactly 2× off-peak, and peak hours are Beijing time 09:00–12:00 and 14:00–18:00 on
-weekdays; weekends (Sat–Sun, Beijing time) are all off-peak. The tier is picked from the
-current clock — set `CLAUDE_STATUSLINE_DEEPSEEK_RATE=peak` (or `offpeak`) to pin it.
+Peak is exactly 2× off-peak, and the peak windows are [09:00, 12:00) and [14:00, 18:00)
+Beijing time on weekdays — 12:00 and 18:00 themselves are off-peak. Weekends (Sat–Sun,
+Beijing time) are all off-peak. The tier is picked from the current clock — set
+`CLAUDE_STATUSLINE_DEEPSEEK_RATE=peak` (or `offpeak`) to pin it.
 
 Every input token is priced at the cache-miss rate. The session totals don't break cache hits
 out, so a session with DeepSeek's automatic context caching costs less than shown — the figure

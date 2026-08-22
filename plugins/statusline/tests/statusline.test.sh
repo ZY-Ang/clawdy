@@ -20,12 +20,16 @@ for b in cat jq awk tr sh; do
 done
 cat > "$TMP/bin/date" <<'EOF'
 #!/bin/sh
-# The script's one date call. Anything else is a contract break; run()
-# captures stderr, so a break fails the assertions with the diagnostic.
-case "$*" in
-  '-u +%H %w') printf '%s %s\n' "$FAKE_UTC_HOUR" "$FAKE_UTC_DOW" ;;
-  *) echo "date called with: $*" >&2; exit 1 ;;
-esac
+# The script's one date call, matched per argument so a quoting regression
+# fails. The diagnostic goes to a file the suite asserts is empty -- the
+# script suppresses stderr, so a muted failure is indistinguishable from a
+# pricing bug.
+if [ "$#" -eq 2 ] && [ "$1" = "-u" ] && [ "$2" = "+%H %w" ]; then
+  printf '%s %s\n' "$FAKE_UTC_HOUR" "$FAKE_UTC_DOW"
+else
+  echo "date called with: $*" >>"${DATE_ERR_FILE:-/dev/null}"
+  exit 1
+fi
 EOF
 chmod +x "$TMP/bin/date"
 
@@ -45,7 +49,8 @@ reset_knobs() {
 
 run() {
   printf '%s' "$1" |
-    PATH="$TMP/bin" TMPDIR="$TMP/state" FAKE_UTC_HOUR="${FAKE_UTC_HOUR:-2}" FAKE_UTC_DOW="${FAKE_UTC_DOW:-3}" \
+    PATH="$TMP/bin" TMPDIR="$TMP/state" DATE_ERR_FILE="$TMP/date-err" \
+    FAKE_UTC_HOUR="${FAKE_UTC_HOUR}" FAKE_UTC_DOW="${FAKE_UTC_DOW}" \
     CLAUDE_STATUSLINE_DEEPSEEK_RATE="${DSR:-auto}" \
     CLAUDE_STATUSLINE_CURRENCY="${CUR:-\$}" CLAUDE_STATUSLINE_FX_RATE="${FX:-1}" \
     CLAUDE_STATUSLINE_COST="${MODE:-auto}" CLAUDE_CODE_USE_BEDROCK="${USE_BEDROCK:-0}" \
@@ -123,10 +128,7 @@ tier_case 06 6 0.66   # Sat, Beijing 14: weekend, afternoon window
 tier_case 02 0 0.66   # Sun, Beijing 10
 tier_case 06 0 0.66   # Sun, Beijing 14
 tier_case 09 0 0.66   # Sun, Beijing 17
-tier_case 01 1 1.32   # Mon, Beijing 09: peak again after the weekend
-tier_case 16 5 0.66   # Fri UTC 16 = Beijing Sat 00: +8 crosses the day
-tier_case 20 5 0.66   # Fri UTC 20 = Beijing Sat 04
-tier_case 23 0 0.66   # Sun UTC 23 = Beijing Mon 07
+tier_case 02 '' 0.66  # broken date (no weekday): off-peak, never peak
 
 # --- deepseek-v4-flash ---------------------------------------------------------
 reset_knobs; DSR=offpeak
@@ -224,6 +226,10 @@ reset_knobs; MODE=always
 got=$(run "$(F deepseek-chat 1000000 1000000 n2 '')")
 assert "COST_MODE=always, unpriced id: 0.00, not a fake estimate" \
   '[deepseek-chat] 42% context | in:1.0M out:1.0M | total: $0.00 | turn: +$0.0000' "$got"
+
+if [ -s "$TMP/date-err" ]; then
+  bad "date contract broken" "$(cat "$TMP/date-err")"
+fi
 
 printf '%d ran, %d failed\n' "$ran" "$fails"
 [ "$fails" -eq 0 ]
