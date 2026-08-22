@@ -371,11 +371,13 @@ aggressively:
   the state file silently, or the first poll replays the past as events;
 - **one thing has no event: the base moving under the PR.** A merge to main makes every
   open PR stale without emitting a single event on any of them — no comment, no review, no
-  check run, and webhooks see it no better. So the watcher polls the PR's own
-  `mergeStateStatus` as a third signal and emits when it enters the actionable set —
-  `BEHIND`, `UNSTABLE`, `DIRTY`, `BLOCKED` — with `CLEAN`/`UNKNOWN`/absent treated as one
-  silent "steady" bucket so recomputes stay quiet. A watcher without this third signal
-  watches everything except the one thing that grays the merge button.
+  check run, and webhooks see it no better. So the watcher polls the base branch's tip
+  (`repos/{o}/{r}/git/refs/heads/main`) as a third signal and emits when the sha moves.
+  This is the deterministic version: `mergeStateStatus` is recomputed lazily, so a poll
+  can read stale `CLEAN` straight through the whole `BEHIND` window — that is how the
+  first version of this signal missed its own live test. The tip sha moves the instant
+  the merge lands, and the check-run stream already covers failures; a watcher without
+  this third signal watches everything except the one thing that grays the merge button.
 
 That is the mechanism that makes "answer review threads" a loop step that actually fires
 rather than a step that waits for someone to type. `pr-watch --wait` covers the CI wait; the
