@@ -329,6 +329,41 @@ Mark every reply and every PR description with the agent emoji — `reply-issue`
 **Human threads** — fix it and reply describing the change, but do **not** resolve. Resolving
 someone else's thread takes away their chance to disagree.
 
+## A thread is done only when your reply is the last word
+
+Review feedback is not discharged by replying — it is discharged by being the last person to
+speak. Three rules, and the third is the one that fails silently:
+
+- **"Addressed" means your marked reply is the latest comment in the thread.** A reviewer who
+  answers after you reopens the thread, even if the fix landed — so each tick re-reads the
+  threads you already posted in, not just new ones. The agent mark is what tells your last
+  word from anyone else's; this is the same last-word test `check-replies` applies to
+  `needs-human` issues.
+- **Unaddressed threads pre-empt everything, CI included.** Read the threads *before* waiting
+  on a pipeline: `gh api repos/{o}/{r}/pulls/{n}/comments` for inline threads, plus the
+  general comments. If any thread's last word is not yours, a green pipeline proves nothing —
+  fix, push, then re-check. Waiting for CI while review feedback stands is the waste the
+  readiness gate exists to prevent.
+- **Resolved means resolved on the platform, not in prose.** Where the host has a resolve
+  action on threads, bot threads get resolved by you after the fix and human threads never
+  do. A comment that says "done" without the resolution state discharges nothing.
+
+## Arm a watcher on every open PR you own
+
+The platform notifies you of failures, review comments and merges — but only while a session
+is listening, and nothing is listening by default. **After opening a PR, arm a persistent
+monitor on it** so review activity re-enters the loop without a human poke:
+
+- poll the PR's state, inline comments, reviews and general comments every couple of minutes,
+  and emit **only when something changed** — a state file holding the last snapshot makes the
+  watch silent between changes;
+- each emitted line becomes a notification that wakes the turn, which then runs the thread
+  rules above.
+
+That is the mechanism that makes "answer review threads" a loop step that actually fires
+rather than a step that waits for someone to type. `pr-watch --wait` covers the CI wait; the
+persistent watcher covers everything that happens *between* waits.
+
 ## Long checks run in the background
 
 Anything that can block for minutes — waiting on CI, a long test run — goes out as a background
