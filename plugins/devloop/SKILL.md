@@ -352,24 +352,25 @@ speak. Three rules, and the third is the one that fails silently:
 
 The platform notifies you of failures, review comments and merges — but only while a session
 is listening, and nothing is listening by default. **After opening a PR, arm a persistent
-monitor on it** so review activity re-enters the loop without a human poke:
+monitor on it** so review activity re-enters the loop without a human poke.
 
-- poll the PR's state, inline comments, reviews and general comments every couple of minutes,
-  and emit **only when something changed** — a state file holding the last snapshot makes the
-  watch silent between changes;
-- **initialise the snapshot silently.** The first poll writes the state file without
-  emitting, or every arming announces a change that is not one — and a stale state file
-  from an earlier watcher compares today's snapshot against a previous run's, which is the
-  same false event, so use a fresh path per arming;
-- **fingerprint only what is actionable.** State, draft, and the comment/review counts.
-  Merge-status fields flap while the platform recomputes (`MERGEABLE`↔`UNKNOWN`), so
-  including them turns every recompute into a false event;
-- each emitted line becomes a notification that wakes the turn, which then runs the thread
-  rules above.
+The watcher is a **webhook you poll for**. A webhook delivers one message per event — every
+comment, every review, every check run completing, every merge. The watcher does the same,
+aggressively:
+
+- poll the PR's timeline events (`gh api repos/{o}/{r}/issues/{n}/events`) every minute or
+  two, and the check runs for the branch head (`repos/{o}/{r}/commits/{sha}/check-runs`);
+- keep the ids already seen in a state file, and **emit one line per unseen id** — one
+  notification per event, exactly like a webhook delivery. A comment, a review, a label
+  change, a run finishing, a run failing, a merge: each wakes the turn on its own;
+- the ids are the events; nothing else is. Do not snapshot state and diff it — a
+  state-diff watcher sleeps through the events themselves and wakes only when a bucket
+  changes, which under-fires in exactly the way a webhook never does. Noise suppression
+  belongs to the turn that receives the event, not to the watcher.
 
 That is the mechanism that makes "answer review threads" a loop step that actually fires
 rather than a step that waits for someone to type. `pr-watch --wait` covers the CI wait; the
-persistent watcher covers everything that happens *between* waits.
+persistent watcher delivers everything that happens *between* waits, one event at a time.
 
 ## Long checks run in the background
 
