@@ -143,9 +143,9 @@ the body
 ```
 
 **On GitHub an agent posts through the human's own token**, so every comment shows the same
-author. Unlike GitLab — where agent and human have different usernames and the author alone
-tells them apart — the mark is the *only* signal here. Without it a reader cannot tell whose
-words they are reading.
+author. On backends where agent and human have different usernames the author alone tells them
+apart; here the mark is the *only* signal. Without it a reader cannot tell whose words they
+are reading.
 
 It is added when missing rather than demanded. A guard that rejects the call teaches agents to
 route around it, and `gh issue comment` is always one keystroke away. Marking twice is a no-op.
@@ -251,7 +251,7 @@ questions answer q-7f3a "Keep them — invoices stay immutable"
 questions close  q-7f3a --reason superseded
 questions prune  --older-than 30d      # closed and answered only
 questions --stale 7d                   # open, and older than a week
-questions name   "homelab bring-up"    # label this session in listings
+questions name   "bring-up"            # label this session in listings
 ```
 
 **The answer is appended to the note, not stored beside it.** The question and what came back are

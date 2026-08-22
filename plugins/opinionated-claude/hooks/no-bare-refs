@@ -1,0 +1,110 @@
+#!/bin/sh
+# Stop hook: refuse to end a turn that cites work by bare number.
+#
+#   "Filed #64 and #65."                       blocked -- which repo? no link
+#   "Filed https://github.com/o/r/issues/64."  allowed
+#
+# A reader with overloaded context cannot tell what repository a bare #55
+# belongs to, and cannot click it. The URL is the reference; the number is not.
+#
+# EXCEPTION: a terminal that renders #N and !N as clickable links does not need
+# the URL. This hook cannot see the terminal, so the user records that fact
+# once, and the hook stands down:
+#
+#   CLAUDE_REFERENCE_LINKS=1
+#
+# Stripped before matching:
+#
+#   [text](url)     a markdown link already carries its URL; its text is not a
+#                   bare citation
+#   `code`          quoting a reference is not citing one -- inline and fenced
+#
+# Fences are stripped only when they pair up. An odd fence is a typo, and
+# treating everything after it as code is how one stray backtick-triple hid
+# real refs from the first version: the whole tail was swallowed and the guard
+# passed silently. With an odd count nothing is stripped -- blocking a ref
+# inside a malformed fence is the lesser evil than hiding the ones outside it.
+#
+# KNOWN LIMITS, deliberately:
+#
+# - "we're #1", "step #2", hex "#111" are blocked. Any bare #N could be a
+#   reference, and the cost of reading a citation as prose is higher than a
+#   one-word rewrite.
+# - "# 42" (space between marker and digits) is not matched.
+# - the word-glue carve-out assumes a space-delimited script: in a script that
+#   runs words together (CJK), "见#64" is still matched. That reads as
+#   blocking a citation, which is the guard working.
+#
+# Escape: CLAUDE_ALLOW_ASKING=1, shared with the sibling hooks -- one switch for
+# "this turn is deliberately about the guards", not two to remember.
+#
+# Exit 2 blocks the turn and returns stderr to the model, which then rewrites
+# the message with URLs.
+
+INPUT=$(cat 2>/dev/null || true)
+
+case "${CLAUDE_ALLOW_ASKING:-}" in 1|true) exit 0 ;; esac
+case "${CLAUDE_REFERENCE_LINKS:-}" in 1|true) exit 0 ;; esac
+
+field() { printf '%s' "$INPUT" | sed -n "s/.*\"$1\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1; }
+
+case "$INPUT" in *'"stop_hook_active": true'*|*'"stop_hook_active":true'*) exit 0 ;; esac
+
+TRANSCRIPT=$(field transcript_path)
+[ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
+
+command -v jq >/dev/null 2>&1 || exit 0
+LAST=$(jq -rs '
+  [ .[]
+    | select(.type == "assistant")
+    | .message.content
+    | if type == "array" then map(select(.type == "text") | .text) | join("\n") else . end
+  ] | last // ""
+' "$TRANSCRIPT" 2>/dev/null) || exit 0
+[ -n "$LAST" ] || exit 0
+
+# Fences first: the inline-backtick sed below would eat a fence marker's third
+# backtick and leave awk nothing to pair on. Then markdown links -- [text](url)
+# already carries the URL -- then inline code: balanced pairs, then any
+# unbalanced leftover (one backtick is a typo; it must not turn a quoted ref
+# into a block).
+TEXT=$(printf '%s' "$LAST" \
+  | awk '
+      { sub(/^[[:space:]]+/, ""); line[NR] = $0; fence[NR] = /^```/ ? 1 : 0; n += fence[NR] }
+      END {
+        if (n % 2 == 1) { for (i = 1; i <= NR; i++) print line[i]; exit }
+        inside = 0
+        for (i = 1; i <= NR; i++) {
+          if (fence[i]) { inside = !inside; continue }
+          if (!inside) print line[i]
+        }
+      }' \
+  | sed 's/\[[^]]*\]([^)]*)//g' \
+  | sed 's/`[^`]*`//g; s/`[^`]*//g')
+
+# Bare refs: #N or !N. The class before the marker excludes alphanumerics
+# (glued refs like PR#63), "/" (a # in a URL path), and the two markers
+# themselves (## headings, !!).
+REFS=$(printf '%s' "$TEXT" | grep -oE '(^|[^0-9A-Za-z/!#])[#!][0-9]+' \
+  | sed 's/^[^#!]//' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+
+[ -n "$REFS" ] || exit 0
+
+cat >&2 <<MSG
+Blocked: this turn cites work by bare number ($REFS).
+
+A reader cannot tell what repository a bare #55 belongs to, and cannot click
+it. Write the full URL instead:
+
+  - not "Filed #64."           ->  "Filed https://github.com/OWNER/REPO/issues/64."
+  - not "see #65, then #55."   ->  "see https://github.com/OWNER/REPO/issues/65,
+                                    then https://github.com/OWNER/REPO/issues/55."
+
+If this terminal renders #N and !N as clickable links, that is the exception --
+and since this hook cannot see the terminal, record it once:
+
+  CLAUDE_REFERENCE_LINKS=1
+
+Deliberately writing about this guard: CLAUDE_ALLOW_ASKING=1
+MSG
+exit 2

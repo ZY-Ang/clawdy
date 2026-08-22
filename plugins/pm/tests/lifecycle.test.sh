@@ -88,8 +88,8 @@ find "$CLAUDE_QUESTIONS_DIR" -name '*.md' -exec touch -t 202001010000 {} \;
 case "$(q --stale 7d 2>&1)" in *"Fresh one"*) ok "an old one is" ;; *) bad "an old one is" ;; esac
 
 # --- session naming -----------------------------------------------------------
-q name "homelab bring-up" >/dev/null 2>&1
-case "$(q --all 2>&1)" in *"homelab bring-up"*) ok "listings use the session name" ;;
+q name "bring-up" >/dev/null 2>&1
+case "$(q --all 2>&1)" in *"bring-up"*) ok "listings use the session name" ;;
   *) bad "listings use the session name" "$(q --all 2>&1)" ;; esac
 rm -f "$CLAUDE_QUESTIONS_DIR/sess-aaaa/.name"
 case "$(q --all 2>&1)" in *fresh-one*) ok "and fall back to the topic slug" ;;
