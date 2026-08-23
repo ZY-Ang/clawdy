@@ -1,7 +1,8 @@
 # The GitLab provider -- the second backend behind the seam.
 #
-# Read half, per #14: provider_name, provider_available, provider_issues,
-# provider_issue. Writes arrive with #13.
+# The read half (#14) plus the issue and MR writes (#17). The authenticated
+# remainder -- the issue-link graph and the needs-human notes -- waits on a
+# token (#18); both endpoints 401 anonymously.
 #
 # Everything here talks to GitLab through the public `glab` CLI and nothing
 # else, for the same reason the github provider talks through `gh`: the
@@ -24,6 +25,11 @@ _glab_read() {
   PROVIDER_ERR=$(cat "$_pe" 2>/dev/null || :)
   rm -f "$_pe" 2>/dev/null || :
   return $_prc
+}
+
+# _glab_write <args...> -- run glab, discard stdout, keep stderr in PROVIDER_ERR.
+_glab_write() {
+  PROVIDER_ERR=$(glab "$@" 2>&1 >/dev/null)
 }
 
 provider_name() { printf 'gitlab'; }
@@ -99,14 +105,119 @@ provider_issue() {
   return "$_rc"
 }
 
-# provider_needs_human <repo> -> not in the read half.
+# --- the write half ----------------------------------------------------------
 #
-# Reading notes takes `glab api` against the notes endpoint, which requires an
-# authenticated read token even on public projects -- the list and view calls
-# above work without one, this one 401s. It lands with the write half and a
-# wire fixture for the notes shape; until then check-replies gets an honest
-# "cannot tell" rather than a pretend-empty answer.
+# Same contract style as the github provider's: each of these WRITES, so each
+# reports failure rather than returning something a caller could mistake for
+# success. The link graph and needs-human notes are the authenticated
+# remainder (issue #18) -- both endpoints 401 without a token, so their wire
+# fixtures cannot exist yet and neither can they.
+#
+# glab takes bodies as ARGUMENTS (-m, -d), not stdin. argv is megabytes; an
+# issue body fits, and glab has no --body-file, so the string goes through.
+
+# provider_comment <n> <body> <repo> -- post a comment (already marked by the caller)
+provider_comment() {
+  _n=${1:?}; _body=${2:?}; _repo=${3:-}
+  # shellcheck disable=SC2086
+  _glab_write issue note "$_n" -m "$_body" ${_repo:+-R "$_repo"}
+}
+
+# $3 is add|remove.
+provider_label() {
+  _n=${1:?}; _label=${2:?}; _op=${3:?}; _repo=${4:-}
+  case "$_op" in
+    add)    # shellcheck disable=SC2086
+            _glab_write issue update "$_n" -l "$_label" ${_repo:+-R "$_repo"} ;;
+    remove) # shellcheck disable=SC2086
+            _glab_write issue update "$_n" -u "$_label" ${_repo:+-R "$_repo"} ;;
+    *) return 2 ;;
+  esac
+}
+
+# $2 is the backend reason where it has one. GitLab has none, so the argument
+# is part of the contract rather than of the call.
+provider_close_issue() {
+  _n=${1:?}; _reason=${2:-}; _repo=${3:-}
+  # shellcheck disable=SC2086
+  _glab_write issue close "$_n" ${_repo:+-R "$_repo"}
+}
+
+# Best-effort by design, same as github's: a label that already exists is not
+# an error, and a backend with no label concept should return 0.
+provider_ensure_label() {
+  _label=${1:?}; _repo=${2:-}
+  # shellcheck disable=SC2086
+  glab label create -n "$_label" ${_repo:+-R "$_repo"} >/dev/null 2>&1 || true
+  return 0
+}
+
+# provider_create_issue <repo> <title> [label ...] -> URL on stdout
+#
+# The body arrives on stdin, as the contract says. Text output, not
+# --output json: glab prints the URL in text mode, and passing it through
+# keeps a field mapping out of this file. --yes skips the confirmation
+# prompt, which would otherwise hang a non-interactive run.
+#
+# Known limit: on a TTY glab prints "!77 Title" above the URL; callers that
+# capture this into a variable should not run under one. The unattended loop
+# never has a TTY.
+provider_create_issue() {
+  _repo=${1:-}; _title=${2:?}; shift 2
+  _body=$(cat)
+  # Rebuild the argument list rather than iterating it in place, same as the
+  # github provider: "$@" is both the list being read and the command being
+  # built.
+  set -- $(for _l in "$@"; do printf -- '--label\n%s\n' "$_l"; done)
+  # shellcheck disable=SC2086
+  _glab_read issue create -t "$_title" -d "$_body" -y "$@" ${_repo:+-R "$_repo"}
+}
+
+provider_issue_labels() {
+  _n=${1:?}; _repo=${2:-}
+  _tmp=${TMPDIR:-/tmp}/pm-gitlab.$$.json
+  _glab_read issue view "$_n" ${_repo:+-R "$_repo"} --output json > "$_tmp"
+  _rc=$?
+  [ "$_rc" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null; return "$_rc"; }
+  jq -r '.labels[]?' < "$_tmp"
+  _rc=$?
+  rm -f "$_tmp" 2>/dev/null
+  return "$_rc"
+}
+
+# provider_open_draft_pr <branch> <title> <body> <base> <repo> -> URL on stdout
+#
+# Text output again: glab mr create prints the MR URL, and nothing here should
+# reimplement printing it. --draft, and --yes against the confirm prompt.
+provider_open_draft_pr() {
+  _branch=${1:?}; _title=${2:?}; _body=${3:?}; _base=${4:?}; _repo=${5:-}
+  # shellcheck disable=SC2086
+  _glab_read mr create -s "$_branch" -b "$_base" -t "$_title" -d "$_body" \
+     --draft -y ${_repo:+-R "$_repo"}
+}
+
+# Empty output means "no open MR for that branch", which is different from
+# "could not ask" -- that is a non-zero return.
+provider_find_pr() {
+  _branch=${1:?}; _repo=${2:-}
+  _tmp=${TMPDIR:-/tmp}/pm-gitlab.$$.json
+  _glab_read mr list -s "$_branch" -F json ${_repo:+-R "$_repo"} --per-page 100 > "$_tmp"
+  _rc=$?
+  [ "$_rc" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null; return "$_rc"; }
+  jq -r '.[0].iid // empty' < "$_tmp" 2>/dev/null
+  _rc=$?
+  rm -f "$_tmp" 2>/dev/null
+  return "$_rc"
+}
+
+# provider_needs_human <repo> -> the authenticated remainder (issue #18).
+#
+# Reading notes takes the notes endpoint, which requires an authenticated
+# read token even on public projects -- the list and view calls above work
+# without one, this one 401s. Until a token and a wire fixture exist,
+# check-replies gets an honest "cannot tell" rather than a pretend-empty
+# answer.
 provider_needs_human() {
-  echo "pm: gitlab provider: needs-human listing is not implemented yet (write half)" >&2
+  echo "pm: gitlab provider: needs-human listing is not implemented yet (issue #18)" >&2
   return 2
 }

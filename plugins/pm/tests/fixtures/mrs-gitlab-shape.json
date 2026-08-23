@@ -1,0 +1,92 @@
+[
+  {
+    "id": 522469445,
+    "iid": 3771,
+    "target_branch": "df-mr-06-pm-core",
+    "source_branch": "duo/fix/missing-api-symbols-go-mod-6560178",
+    "project_id": 34675721,
+    "title": "Draft: [FixPipeline] https://gitlab.com/gitlab-org/cli/-/pipelines/2780812510",
+    "state": "opened",
+    "imported": false,
+    "imported_from": "none",
+    "created_at": "2026-08-21T21:17:45.493Z",
+    "updated_at": "2026-08-21T21:22:51.424Z",
+    "upvotes": 0,
+    "downvotes": 0,
+    "author": {
+      "id": 6121997,
+      "username": "mikeeddington",
+      "name": "Michael Eddington",
+      "state": "active",
+      "created_at": null,
+      "avatar_url": "https://gitlab.com/uploads/-/system/user/avatar/6121997/avatar.png",
+      "web_url": "https://gitlab.com/mikeeddington"
+    },
+    "assignee": {
+      "id": 6121997,
+      "username": "mikeeddington",
+      "name": "Michael Eddington",
+      "state": "active",
+      "created_at": null,
+      "avatar_url": "https://gitlab.com/uploads/-/system/user/avatar/6121997/avatar.png",
+      "web_url": "https://gitlab.com/mikeeddington"
+    },
+    "assignees": [
+      {
+        "id": 6121997,
+        "username": "mikeeddington",
+        "name": "Michael Eddington",
+        "state": "active",
+        "created_at": null,
+        "avatar_url": "https://gitlab.com/uploads/-/system/user/avatar/6121997/avatar.png",
+        "web_url": "https://gitlab.com/mikeeddington"
+      }
+    ],
+    "reviewers": [],
+    "source_project_id": 34675721,
+    "target_project_id": 34675721,
+    "labels": [],
+    "label_details": null,
+    "description": "## Summary\n\n### Root Cause\n`internal/dependencyfirewall/policy/rest.go` referenced API symbols (`gitlab.SecurityDependen ...",
+    "draft": true,
+    "milestone": null,
+    "merge_when_pipeline_succeeds": false,
+    "detailed_merge_status": "draft_status",
+    "merge_user": null,
+    "merged_at": null,
+    "merge_after": null,
+    "prepared_at": "2026-08-21T21:17:48.949Z",
+    "closed_by": null,
+    "closed_at": null,
+    "sha": "6cf2d785d457df719f64e3bbca6f07991f7f267b",
+    "merge_commit_sha": "",
+    "squash_commit_sha": "",
+    "user_notes_count": 2,
+    "should_remove_source_branch": false,
+    "force_remove_source_branch": true,
+    "allow_collaboration": false,
+    "allow_maintainer_to_push": false,
+    "web_url": "https://gitlab.com/gitlab-org/cli/-/merge_requests/3771",
+    "references": {
+      "short": "!3771",
+      "relative": "!3771",
+      "full": "gitlab-org/cli!3771"
+    },
+    "discussion_locked": false,
+    "time_stats": {
+      "human_time_estimate": "",
+      "human_total_time_spent": "",
+      "time_estimate": 0,
+      "total_time_spent": 0
+    },
+    "squash": true,
+    "squash_on_merge": true,
+    "task_completion_status": {
+      "count": 0,
+      "completed_count": 0
+    },
+    "has_conflicts": false,
+    "blocking_discussions_resolved": false,
+    "merged_by": null
+  }
+]
