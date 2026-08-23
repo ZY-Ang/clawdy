@@ -4,7 +4,9 @@
 implements, and the places where GitHub's shape has leaked into it — so you find
 those out here rather than after writing the code.
 
-`lib/provider-github.sh` is the reference implementation and the only one today.
+`lib/provider-github.sh` is the reference implementation. `lib/provider-gitlab.sh` is the
+second, currently the read half only (issue #14): it lists and views issues through the
+public `glab` CLI, and the write half lands with issue #13.
 
 ## Where the seam is
 
