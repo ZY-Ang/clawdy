@@ -33,6 +33,7 @@ are needed by the tools that use them; implement what you use.
 | Function | Returns | Used by |
 | --- | --- | --- |
 | `provider_name` | a word, for messages | everything |
+| `provider_pr_ref_mark` | the markdown glyph that references a code-review item (`#` vs `!`) | `backlog-claim` |
 | `provider_available` | `0` if reachable now | everything |
 | `provider_issues <repo>` | open issues, JSON array | `backlog-queue` `backlog-cluster` |
 | `provider_issue <n> <repo>` | one issue, JSON | `backlog-claim` `backlog-release` |

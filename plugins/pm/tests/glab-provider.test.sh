@@ -67,6 +67,7 @@ run() {
 
 # --- the trivial two ---------------------------------------------------------
 [ "$(run provider_name)" = "gitlab" ] && ok "provider_name is gitlab" || bad "provider_name"
+[ "$(run provider_pr_ref_mark)" = "!" ] && ok "the MR mark is !, not # -- # would read as an issue" || bad "pr_ref_mark"
 
 if ( PATH="$TMP/bin:$PATH"; . "$LIB/provider-gitlab.sh"; provider_available )
 then ok "available when glab is on PATH"

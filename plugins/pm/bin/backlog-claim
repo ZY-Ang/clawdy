@@ -143,9 +143,12 @@ fi
 # Reported, not refused. A loop re-reading its queue will re-claim, and treating
 # that as an error trains it to ignore the exit code.
 EXISTING_PR=$(provider_find_pr "$BRANCH" "$REPO" 2>/dev/null || true)
+# The glyph is the backend's: #n on GitHub, !n on GitLab, where #n would read
+# as an issue reference pointing somewhere wrong.
+PR_MARK=$(provider_pr_ref_mark)
 
 if has_label claimed; then
-  echo "already claimed: #$NUM -> $BRANCH${EXISTING_PR:+  (PR #$EXISTING_PR)}"
+  echo "already claimed: #$NUM -> $BRANCH${EXISTING_PR:+  (PR $PR_MARK$EXISTING_PR)}"
   exit 0
 fi
 
@@ -181,7 +184,7 @@ Closes #$NUM.")
   PR_URL=$(provider_open_draft_pr "$BRANCH" "$TITLE" "$PR_BODY" "$BASE" "$REPO") || PR_URL=""
   [ -n "$PR_URL" ] || { echo "backlog-claim: branch pushed but the draft PR was not created" >&2; say_backend; exit 2; }
 else
-  PR_URL="#$EXISTING_PR"
+  PR_URL="$PR_MARK$EXISTING_PR"
 fi
 
 provider_comment "$NUM" "$(agent_prefix "Claimed -> \`$BRANCH\` (from \`$BASE\`) at $STAMP.
