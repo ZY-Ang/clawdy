@@ -127,11 +127,12 @@ The steps are the contract; the tool names are local to this repository.
    fix.** Never "will do", "will fix", "will update" — the reply describes what you *already
    did*, not what you intend to do. Sequence: change, commit, push, *then* reply. See "Never
    reply 'will fix'".
-6. For each open discussion: **bot threads** — fix it or justify why it is a non-issue, then
-   resolve; if the finding contradicts an operator instruction or a documented project
-   decision, do not silently comply — reply explaining the conflict, leave it unresolved, flag
-   it. **Human threads** — fix it and reply describing the change, but do not resolve; the
-   human's disagreement is their call to close.
+6. For each open discussion: **bot threads** — every comment in the thread carries the agent
+   mark — fix it or justify why it is a non-issue, then resolve; if the finding contradicts
+   an operator instruction or a documented project decision, do not silently comply — reply
+   explaining the conflict, leave it unresolved, flag it. **Human-involved threads** — any
+   thread a person has written in — fix it and reply describing the change, but do not
+   resolve; only a human closes a discussion a human is part of.
 7. After addressing discussions — whether by pushing code or replying in-thread — go back to
    step 4.
 8. Repeat until `pr-watch` exits `0` (mergeable, or merged).
@@ -319,15 +320,19 @@ is always: change, commit, push, *then* reply.
 A reply promising future work is indistinguishable from one reporting completed work when the
 reviewer reads it a day later, and they will assume the latter.
 
-**Bot threads** — fix it, or justify why it is a non-issue, then resolve. If the finding
-contradicts an instruction given earlier or a documented project decision, do **not** silently
-comply: reply explaining the conflict, leave it unresolved, flag it.
+**Bot threads** — every comment in the thread carries the agent mark: your own threads, or
+threads nobody else has joined. Fix it, or justify why it is a non-issue, then resolve. If
+the finding contradicts an instruction given earlier or a documented project decision, do
+**not** silently comply: reply explaining the conflict, leave it unresolved, flag it.
 
 Mark every reply and every PR description with the agent emoji — `reply-issue` does it for you;
 `gh pr create` and `gh api` do not, so do it yourself there.
 
-**Human threads** — fix it and reply describing the change, but do **not** resolve. Resolving
-someone else's thread takes away their chance to disagree.
+**Human-involved threads** — any thread a person has written in, whoever opened it: any
+comment in it lacks the mark. Fix it and reply describing the change, but do **not**
+resolve. Only a human resolves a thread a human is part of — a thread you opened that they
+replied to is now as much theirs as yours, and resolving it takes away their chance to
+disagree.
 
 ## A thread is done only when your reply is the last word
 
@@ -345,8 +350,9 @@ speak. Three rules, and the third is the one that fails silently:
   fix, push, then re-check. Waiting for CI while review feedback stands is the waste the
   readiness gate exists to prevent.
 - **Resolved means resolved on the platform, not in prose.** Where the host has a resolve
-  action on threads, bot threads get resolved by you after the fix and human threads never
-  do. A comment that says "done" without the resolution state discharges nothing.
+  action on threads, bot threads get resolved by you after the fix and human-involved
+  threads never do. A comment that says "done" without the resolution state discharges
+  nothing.
 
 ## Arm a watcher on every open PR you own
 
@@ -358,8 +364,18 @@ The watcher is a **webhook you poll for**. A webhook delivers one message per ev
 comment, every review, every check run completing, every merge. The watcher does the same,
 aggressively:
 
-- poll the PR's timeline events (`gh api repos/{o}/{r}/issues/{n}/events`) every minute or
-  two, and the check runs for the branch head (`repos/{o}/{r}/commits/{sha}/check-runs`);
+- poll the PR's timeline (`gh api repos/{o}/{r}/issues/{n}/timeline`) every minute or
+  two, the reviews (`repos/{o}/{r}/pulls/{n}/reviews`), the review comments
+  (`repos/{o}/{r}/pulls/{n}/comments`), and the check runs for the branch head
+  (`repos/{o}/{r}/commits/{sha}/check-runs`); not the `events` endpoint — it is a strict
+  subset of the timeline (verified on two live objects: nothing in `events` was missing
+  from the timeline, which adds `commented`, `reviewed`, `committed`,
+  `cross-referenced`), and overlapping streams would deliver the same activity twice
+  under different ids. The timeline alone is not enough either: it registered three of
+  six reviews on a live PR — the three against the discarded head — and inline comments
+  not at all, so the second and third streams read reviews and review comments directly,
+  where every one has its own id. Reviews without inline comments exist only in the
+  reviews stream;
 - keep the ids already seen in a state file, and **emit one line per unseen id** — one
   notification per event, exactly like a webhook delivery. A comment, a review, a label
   change, a run finishing, a run failing, a merge: each wakes the turn on its own;
@@ -367,8 +383,10 @@ aggressively:
   state-diff watcher sleeps through the events themselves and wakes only when a bucket
   changes, which under-fires in exactly the way a webhook never does. Noise suppression
   belongs to the turn that receives the event, not to the watcher;
-- **seed every stream on arming** — timeline ids *and* the existing check-run ids go into
-  the state file silently, or the first poll replays the past as events;
+- **seed every stream on arming** — timeline ids, review ids, review-comment ids *and*
+  the existing check-run ids go into the state file silently, or the first poll replays
+  the past as events; one state file for all of them doubles as the dedup: the review
+  ids the timeline does carry are the same ids the reviews stream uses;
 - **one thing has no event: the base moving under the PR.** A merge to main makes every
   open PR stale without emitting a single event on any of them — no comment, no review, no
   check run, and webhooks see it no better. So the watcher polls the base branch's tip
