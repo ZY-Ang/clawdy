@@ -34,6 +34,10 @@ _glab_write() {
 
 provider_name() { printf 'gitlab'; }
 
+# The markdown glyph that references a code-review item on this backend.
+# GitLab has two namespaces: an MR is !n; #n would read as an issue.
+provider_pr_ref_mark() { printf '!'; }
+
 provider_available() { command -v glab >/dev/null 2>&1; }
 
 # provider_issues <repo> -> open issues, normalised, as a JSON array.

@@ -62,6 +62,10 @@ _gh_read() {
 
 provider_name() { printf 'github'; }
 
+# The markdown glyph that references a code-review item on this backend.
+# GitHub has one namespace: a PR is #n, like an issue.
+provider_pr_ref_mark() { printf '#'; }
+
 provider_available() { command -v gh >/dev/null 2>&1; }
 
 # GitHub exposes blockedBy/blocking only where the instance supports issue

@@ -60,7 +60,8 @@ others=$(grep -ln "MARK='🤖'" "$BIN"/* 2>/dev/null || true)
   || bad "a binary redefines the mark" "$others"
 
 # --- the contract is documented where it is implemented ----------------------
-for fn in provider_name provider_available provider_issues provider_issue \
+for fn in provider_name provider_pr_ref_mark provider_available \
+          provider_issues provider_issue \
           provider_comment provider_label provider_create_issue \
           provider_close_issue provider_issue_labels provider_needs_human \
           provider_ensure_label provider_link provider_unlink \
@@ -116,6 +117,13 @@ case "$(loadp empty)" in *PROVIDERS.md*) ok "and points at the contract" ;;
 # --- provider_is_triaged, and what a 2 obliges the caller to do --------------
 . "$LIB/provider-github.sh"
 tri() { provider_is_triaged "$1"; echo $?; }
+
+# --- the reference glyph -----------------------------------------------------
+# One namespace on GitHub, two on GitLab: the mark is a backend fact, so it
+# lives on the provider rather than in a consumer's case statement.
+[ "$(provider_pr_ref_mark)" = "#" ] && ok "github references a PR with #" || bad "github mark"
+( . "$LIB/provider-gitlab.sh"; [ "$(provider_pr_ref_mark)" = "!" ] ) \
+  && ok "gitlab references an MR with !" || bad "gitlab mark"
 
 [ "$(tri '{"labels":[{"name":"priority-low"},{"name":"urgency-low"},{"name":"size-s"}]}')" -eq 0 ] \
   && ok "all three axes present -> triaged" || bad "triaged -> 0"
