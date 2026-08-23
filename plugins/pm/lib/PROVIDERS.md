@@ -5,8 +5,9 @@ implements, and the places where GitHub's shape has leaked into it — so you fi
 those out here rather than after writing the code.
 
 `lib/provider-github.sh` is the reference implementation. `lib/provider-gitlab.sh` is the
-second, currently the read half only (issue #14): it lists and views issues through the
-public `glab` CLI, and the write half lands with issue #13.
+second, through the public `glab` CLI: it lists and views issues, and writes issues and
+MRs. The authenticated remainder — the issue-link graph and the needs-human notes —
+waits on a token (issue #18).
 
 ## Where the seam is
 
