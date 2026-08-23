@@ -1,0 +1,149 @@
+[
+  {
+    "id": 198298477,
+    "iid": 8511,
+    "external_id": "",
+    "state": "opened",
+    "description": "## Problem\n\n`glab mr list` fetches all results upfront before rendering anything. This means the user waits with a blank screen while every page is fe ...",
+    "health_status": "",
+    "author": {
+      "id": 31784485,
+      "state": "active",
+      "web_url": "https://gitlab.com/dankparth",
+      "name": "Parth Sharma",
+      "avatar_url": "https://gitlab.com/uploads/-/system/user/avatar/31784485/avatar.png",
+      "username": "dankparth"
+    },
+    "milestone": null,
+    "project_id": 34675721,
+    "assignees": [],
+    "updated_at": "2026-08-22T10:09:46.055Z",
+    "closed_at": null,
+    "closed_by": null,
+    "title": "feat: wire `internal/loader` into interactive `glab mr list` with viewport-aware lazy loading",
+    "created_at": "2026-08-22T09:35:59.317Z",
+    "moved_to_id": 0,
+    "labels": [
+      "automation:ml",
+      "feature::enhancement",
+      "type::feature"
+    ],
+    "label_details": null,
+    "upvotes": 0,
+    "downvotes": 0,
+    "due_date": null,
+    "web_url": "https://gitlab.com/gitlab-org/cli/-/work_items/8511",
+    "references": {
+      "short": "#8511",
+      "relative": "#8511",
+      "full": "gitlab-org/cli#8511"
+    },
+    "time_stats": {
+      "human_time_estimate": "",
+      "human_total_time_spent": "",
+      "time_estimate": 0,
+      "total_time_spent": 0
+    },
+    "confidential": false,
+    "weight": 0,
+    "discussion_locked": false,
+    "issue_type": "issue",
+    "subscribed": false,
+    "user_notes_count": 2,
+    "_links": {
+      "self": "https://gitlab.com/api/v4/projects/34675721/issues/8511",
+      "notes": "https://gitlab.com/api/v4/projects/34675721/issues/8511/notes",
+      "award_emoji": "https://gitlab.com/api/v4/projects/34675721/issues/8511/award_emoji",
+      "project": "https://gitlab.com/api/v4/projects/34675721"
+    },
+    "issue_link_id": 0,
+    "merge_requests_count": 0,
+    "epic_issue_id": 0,
+    "epic": null,
+    "iteration": null,
+    "task_completion_status": {
+      "count": 5,
+      "completed_count": 0
+    },
+    "service_desk_reply_to": "",
+    "assignee": null
+  },
+  {
+    "id": 198218557,
+    "iid": 8510,
+    "external_id": "",
+    "state": "opened",
+    "description": "## Summary\n\nWhen `.agents` at the repository root is a **symlink** pointing to a subdirectory within the same repository (e.g. `agent-capabilities/.ag ...",
+    "health_status": "",
+    "author": {
+      "id": 5537005,
+      "state": "active",
+      "web_url": "https://gitlab.com/cleveland",
+      "name": "Cleveland Bledsoe Jr",
+      "avatar_url": "https://gitlab.com/uploads/-/system/user/avatar/5537005/avatar.png",
+      "username": "cleveland"
+    },
+    "milestone": null,
+    "project_id": 34675721,
+    "assignees": [],
+    "updated_at": "2026-08-21T22:13:34.411Z",
+    "closed_at": null,
+    "closed_by": null,
+    "title": "Skill discovery reports false collision when `.agents` is a symlink to a subdirectory",
+    "created_at": "2026-08-21T21:29:05.304Z",
+    "moved_to_id": 0,
+    "labels": [
+      "Category:GitLab CLI",
+      "automation:ml",
+      "automation:quick-win",
+      "automation:quick-win-judged",
+      "backend",
+      "bug::functional",
+      "category:gitlab cli",
+      "devops::ai coding",
+      "group::code review",
+      "quick win",
+      "section::ai",
+      "type::bug"
+    ],
+    "label_details": null,
+    "upvotes": 0,
+    "downvotes": 0,
+    "due_date": null,
+    "web_url": "https://gitlab.com/gitlab-org/cli/-/work_items/8510",
+    "references": {
+      "short": "#8510",
+      "relative": "#8510",
+      "full": "gitlab-org/cli#8510"
+    },
+    "time_stats": {
+      "human_time_estimate": "",
+      "human_total_time_spent": "",
+      "time_estimate": 0,
+      "total_time_spent": 0
+    },
+    "confidential": false,
+    "weight": 0,
+    "discussion_locked": false,
+    "issue_type": "issue",
+    "subscribed": false,
+    "user_notes_count": 2,
+    "_links": {
+      "self": "https://gitlab.com/api/v4/projects/34675721/issues/8510",
+      "notes": "https://gitlab.com/api/v4/projects/34675721/issues/8510/notes",
+      "award_emoji": "https://gitlab.com/api/v4/projects/34675721/issues/8510/award_emoji",
+      "project": "https://gitlab.com/api/v4/projects/34675721"
+    },
+    "issue_link_id": 0,
+    "merge_requests_count": 0,
+    "epic_issue_id": 0,
+    "epic": null,
+    "iteration": null,
+    "task_completion_status": {
+      "count": 0,
+      "completed_count": 0
+    },
+    "service_desk_reply_to": "",
+    "assignee": null
+  }
+]
