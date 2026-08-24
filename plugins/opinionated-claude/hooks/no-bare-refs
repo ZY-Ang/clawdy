@@ -23,7 +23,7 @@
 #                   ANY scheme, not just http -- ftp:// and git+ssh:// carry the
 #                   same path shape, and would otherwise be read as project refs.
 #
-#                   The strip STOPS at ,;()<>"`* -- a URL is routinely followed
+#                   The strip STOPS at ,;()<>"* -- a URL is routinely followed
 #                   by punctuation and then a real ref, and eating to the next
 #                   space swallowed it. "…/pull/12,#64" must still block #64.
 #                   A "#" with no separator before it is a fragment and goes
@@ -56,6 +56,15 @@
 #   lexically identical to `PR#63`, and no rule fires on one without the other.
 # - a scheme-less URL ("example.com/docs/page#123") reads as a project path and
 #   is matched. Writing the scheme is the fix, and is what the guard wants anyway.
+# - a URL whose PATH contains a comma or a bracket stops the strip early, and the
+#   remnant is path-shaped: ".../@1,2/x#4" is matched. The comma cannot be both a
+#   URL character and a citation separator, and "…/pull/12,#64" losing its ref is
+#   the worse failure -- a false positive costs a rewrite, a false negative is the
+#   guard going quiet.
+# - a separator outside the stop class still eats the ref after it: "…/b--#64" is
+#   NOT matched. "-" cannot join the class; it is in almost every URL path.
+# - "project/#123" IS matched: the slash makes it path-shaped. Only the
+#   slash-less "project#123" is exempt.
 # - the word-glue carve-out assumes a space-delimited script: in a script that
 #   runs words together (CJK), "见#64" is still matched. That reads as
 #   blocking a citation, which is the guard working.
@@ -106,7 +115,7 @@ TEXT=$(printf '%s' "$LAST" \
       }' \
   | sed 's/\[[^]]*\]([^)]*)//g' \
   | sed 's/`[^`]*`//g; s/`[^`]*//g' \
-  | sed 's|[A-Za-z][A-Za-z0-9+.-]*://[^[:space:],;()<>"`*]*||g')
+  | sed 's|[A-Za-z][A-Za-z0-9+.-]*://[^[:space:],;()<>"*]*||g')
 
 # Bare refs: #N or !N. The class before the marker excludes alphanumerics
 # (glued refs like PR#63), "/" (a # in a URL path), and the two markers

@@ -93,6 +93,9 @@ allows "http, not only https"               "The anchor is at http://example.com
 allows "an uppercase scheme"                "The anchor is at HTTPS://example.com/docs/page#123."
 allows "a non-web scheme"                   "See ftp://host.com/pub/dir/file#12 there."
 allows "a compound scheme"                  "Clone git+ssh://git@host/group/project#123 now."
+allows "a quote-wrapped URL"                'See "https://a.com/b/c#42" there.'
+# The stop class earns its keep here: a quoted URL followed by a real ref.
+blocks "a ref after a quoted URL"           'See "https://a.com/b"#64 now.'
 
 # THE BOUNDARY. A URL is routinely followed by punctuation and then a real ref.
 # Stripping to the next space swallowed the ref with it and the guard fell
@@ -197,7 +200,10 @@ case "$out" in *CLAUDE_REFERENCE_LINKS*) ok "and names the clickable-terminal es
 # A pathed ref is reported whole: "group/project!123" tells a reader which
 # project, which is the entire complaint. "!123" repeats the problem.
 printf '%s' "See group/project!123 for it." | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
-out=$(printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/null)
+# Match the FIRST line only: the help text below it contains the literal
+# "group/project!123" as an example, so matching the whole message passes
+# whatever PATHED reports.
+out=$(printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/null | head -1)
 case "$out" in *'group/project!123'*) ok "names a pathed ref whole" ;; *) bad "names a pathed ref whole" "$out" ;; esac
 
 echo "---"
