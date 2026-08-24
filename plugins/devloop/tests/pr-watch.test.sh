@@ -99,6 +99,7 @@ case "\$1" in
   list) printf '42\\n43\\n' ;;
   view) cat "$TMP/$1.json" ;;
   wait) exit ${2:-3} ;;
+  mark) printf '!' ;;
   *) exit 2 ;;
 esac
 PROV
@@ -445,6 +446,79 @@ timeout 5 sh -c "PR_WATCH_PROVIDER='$TMP/stdinprov' sh '$BIN' --all" < "$TMP/fif
 rc=$?
 if [ "$rc" -ne 124 ]; then printf 'ok   %-22s did not hang (exit %s)\n' provider-reads-stdin "$rc"
 else fails=$((fails + 1)); printf 'FAIL %-22s hung until killed\n' provider-reads-stdin; fi
+
+# --- the reference glyph is the provider's, not GitHub's ----------------------
+# "#123" names an ISSUE on GitLab; a merge request is "!123". So the header
+# line asserted the wrong object as soon as a provider supplied the data. pm
+# already fixed this class with provider_pr_ref_mark; here the provider is an
+# external command, so it answers a fourth verb.
+ran=$((ran + 1))
+: > "$TMP/prov.log"; mkprov clean-approved
+out=$(PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" 42 2>&1)
+case "$out" in
+  "!42 "*) printf 'ok   %-22s uses the provider glyph\n' glyph-from-provider ;;
+  *) fails=$((fails + 1)); printf 'FAIL %-22s first line: %s\n' glyph-from-provider "$(printf '%s' "$out" | head -1)" ;;
+esac
+
+# A provider that does not implement `mark` keeps GitHub's #, so nothing that
+# works today changes.
+ran=$((ran + 1))
+cat > "$TMP/nomark" <<NOMARK
+#!/bin/sh
+case "\$1" in view) cat "$TMP/clean-approved.json" ;; *) exit 2 ;; esac
+NOMARK
+chmod +x "$TMP/nomark"
+out=$(PR_WATCH_PROVIDER="$TMP/nomark" sh "$BIN" 42 2>&1)
+case "$out" in
+  "#42 "*) printf 'ok   %-22s defaults to #\n' glyph-default ;;
+  *) fails=$((fails + 1)); printf 'FAIL %-22s first line: %s\n' glyph-default "$(printf '%s' "$out" | head -1)" ;;
+esac
+
+# A provider that answers `mark` with a whole line -- an error message, a usage
+# banner, a stray newline -- must not have it spliced into the verdict. Anything
+# that is not exactly one character falls back to #.
+ran=$((ran + 1))
+cat > "$TMP/chattymark" <<CHATTY
+#!/bin/sh
+case "\$1" in
+  view) cat "$TMP/clean-approved.json" ;;
+  mark) echo "error: unknown subcommand 'mark'" ;;
+  *) exit 2 ;;
+esac
+CHATTY
+chmod +x "$TMP/chattymark"
+out=$(PR_WATCH_PROVIDER="$TMP/chattymark" sh "$BIN" 42 2>&1)
+case "$out" in
+  "#42 "*) printf 'ok   %-22s a multi-character mark is ignored\n' glyph-chatty ;;
+  *) fails=$((fails + 1)); printf 'FAIL %-22s first line: %s\n' glyph-chatty "$(printf '%s' "$out" | head -1)" ;;
+esac
+
+# The gh path is unchanged.
+ran=$((ran + 1))
+out=$(PR_WATCH_JSON="$TMP/clean-approved.json" sh "$BIN" 2>&1)
+case "$out" in
+  "#42 "*) printf 'ok   %-22s the fixture path still uses #\n' glyph-gh ;;
+  *) fails=$((fails + 1)); printf 'FAIL %-22s first line: %s\n' glyph-gh "$(printf '%s' "$out" | head -1)" ;;
+esac
+
+# --- --all --wait must not accept a flag it ignores ---------------------------
+# The ALL block exits before the wait block, so --wait was accepted and did
+# nothing. A gate that reports before checks settle is the exact failure the
+# readiness rule exists to prevent, and it is silent.
+ran=$((ran + 1))
+: > "$TMP/prov.log"; mkprov clean-approved
+PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" --all --wait >/dev/null 2>&1
+rc=$?
+if [ "$rc" -eq 2 ] && ! grep -q '^view' "$TMP/prov.log"
+then printf 'ok   %-22s exit 2, nothing fetched\n' all-wait-rejected
+else fails=$((fails + 1)); printf 'FAIL %-22s exit %s, log: %s\n' all-wait-rejected "$rc" "$(tr '\n' ' ' < "$TMP/prov.log")"; fi
+
+ran=$((ran + 1))
+out=$(PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" --all --wait 2>&1)
+case "$out" in
+  *"cannot be combined"*) printf 'ok   %-22s says why\n' all-wait-message ;;
+  *) fails=$((fails + 1)); printf 'FAIL %-22s out: %s\n' all-wait-message "$out" ;;
+esac
 
 # --- argument handling ------------------------------------------------------
 ran=$((ran + 1))

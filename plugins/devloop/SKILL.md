@@ -48,6 +48,7 @@ The provider is any executable answering three verbs:
 | --- | --- |
 | `view [<id>]` | one pull request as JSON, on stdout. No id means the current branch |
 | `list` | ids of your open pull requests, one per line. `--all` only |
+| `mark` | **optional**: the glyph referencing a code-review item — `#` on GitHub, `!` on GitLab, where `#123` names an *issue*. Anything but one character falls back to `#` |
 | `wait <id>` | **optional**: block until checks settle. **Any** non-zero exit — unimplemented, broken, auth expired — makes `pr-watch` poll `view` instead |
 
 A `view` that exits non-zero, or exits `0` printing nothing, is "could not tell" and becomes
@@ -82,6 +83,9 @@ The JSON shape is the `FIELDS` list in `bin/pr-watch`. Two things to get right:
   the base moved under this branch — compare the recorded base sha against the target
   branch's current tip. A provider that omits it reports a stale `CLEAN`, and a verdict goes
   stale the moment the base moves.
+- **`--all` and `--wait` cannot be combined.** `--all` used to accept `--wait` and silently
+  ignore it, reporting before checks settled — the one failure the readiness rule exists to
+  prevent. It is exit `2` now.
 - **Polling knobs** for the `wait` fallback: `PR_WATCH_INTERVAL` (default 30s, floored at 1s)
   and `PR_WATCH_TIMEOUT` (default 1800s, capped at a week). Both must be whole numbers of
   seconds; a typo — or a value near the integer ceiling, which wraps the deadline negative
