@@ -161,23 +161,19 @@ allows "'now green' after a verb" "Rebased onto a295971 and pushed. CI is now gr
 allows "a plain result"           "Swept 46 merged PRs; 12 carried no closing link."
 
 # --- safety rails -------------------------------------------------------------
-ran=$((ran+1))
 printf '%s' "I'll do it now." | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
 if printf '{"transcript_path":"%s","stop_hook_active":true}' "$TMP/t.jsonl" | sh "$HOOK" >/dev/null 2>&1
 then ok "stop_hook_active stops it re-blocking"
-else fails=$((fails+1)); printf 'FAIL stop_hook_active\n'; fi
+else bad "stop_hook_active"; fi
 
-ran=$((ran+1))
 if printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | CLAUDE_ALLOW_ASKING=1 sh "$HOOK" >/dev/null 2>&1
 then ok "CLAUDE_ALLOW_ASKING=1 overrides, same switch as the sibling"
-else fails=$((fails+1)); printf 'FAIL escape hatch\n'; fi
+else bad "escape hatch"; fi
 
-ran=$((ran+1))
 if printf '{"transcript_path":"/nope/missing.jsonl"}' | sh "$HOOK" >/dev/null 2>&1
 then ok "a missing transcript stands down"
-else fails=$((fails+1)); printf 'FAIL missing transcript\n'; fi
+else bad "missing transcript"; fi
 
-ran=$((ran+1))
 if printf '' | sh "$HOOK" >/dev/null 2>&1
 then ok "empty input stands down"; else fails=$((fails+1)); printf 'FAIL empty input\n'; fi
 

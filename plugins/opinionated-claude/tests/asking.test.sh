@@ -134,24 +134,20 @@ Want me to is the phrase I keep reaching for, and it is a stall.
 Fixed in 9fe9c24 -- the hook now blocks it."
 
 # --- safety rails -------------------------------------------------------------
-ran=$((ran+1))
 printf '{"transcript_path":"%s","stop_hook_active":true}' "$TMP/t.jsonl" > "$TMP/in"
 printf '%s' "Want me to?" | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
 if sh "$HOOK" < "$TMP/in" >/dev/null 2>&1; then ok "stop_hook_active stops it re-blocking"
-else fails=$((fails+1)); printf 'FAIL stop_hook_active stops it re-blocking\n'; fi
+else bad "stop_hook_active stops it re-blocking"; fi
 
-ran=$((ran+1))
 if printf '%s' "Want me to?" | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl" &&
    printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | CLAUDE_ALLOW_ASKING=1 sh "$HOOK" >/dev/null 2>&1
 then ok "CLAUDE_ALLOW_ASKING=1 overrides"
-else fails=$((fails+1)); printf 'FAIL CLAUDE_ALLOW_ASKING=1 overrides\n'; fi
+else bad "CLAUDE_ALLOW_ASKING=1 overrides"; fi
 
-ran=$((ran+1))
 if printf '{"transcript_path":"/nope/missing.jsonl"}' | sh "$HOOK" >/dev/null 2>&1
 then ok "a missing transcript stands down rather than blocking"
-else fails=$((fails+1)); printf 'FAIL missing transcript stands down\n'; fi
+else bad "missing transcript stands down"; fi
 
-ran=$((ran+1))
 if printf '' | sh "$HOOK" >/dev/null 2>&1
 then ok "empty input stands down"; else fails=$((fails+1)); printf 'FAIL empty input stands down\n'; fi
 

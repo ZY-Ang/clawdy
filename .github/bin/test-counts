@@ -1,0 +1,46 @@
+#!/bin/sh
+# Every suite's summary must equal the assertions it actually printed.
+#
+# Three suites reported a total larger than the number of cases they ran: a
+# case that called ok() -- which increments -- and then incremented again on
+# its own line. The nastier half is that the failure branch incremented ONCE,
+# so the denominator moved with the outcome: "53 passed" and "2 of 49 failed"
+# described the same suite.
+#
+# A count nobody can trust is worse than no count, because it is quoted. This
+# repository's own commit messages cite these numbers as evidence.
+#
+# Compares the summary line against the ok/FAIL lines above it.
+#
+#   sh .github/bin/test-counts
+set -u
+fail=0
+skipped=""
+for t in plugins/*/tests/*.test.sh .github/bin/*.test.sh; do
+  [ -f "$t" ] || continue
+  case "$t" in */test-counts.test.sh) continue ;; esac
+  out=$(sh "$t" 2>&1) || :
+  printed=$(printf '%s\n' "$out" | grep -c '^ok  \|^FAIL ') || printed=0
+  # "N passed" | "N of M failed" | "N ran, M failed"
+  last=$(printf '%s\n' "$out" | tail -1)
+  # A suite that printed no assertion at all skipped -- live.test.sh without
+  # PM_LIVE_REPO, or one that refused to run. Whether refusing should exit 1 is
+  # a different question (issue 26); this checks arithmetic, not skip
+  # semantics, and has nothing to count either way.
+  [ "$printed" -eq 0 ] && { skipped="$skipped $t"; continue; }
+  case "$last" in
+    *passed)        claimed=$(printf '%s' "$last" | awk '{print $1}') ;;
+    *"ran, "*)      claimed=$(printf '%s' "$last" | awk '{print $1}') ;;
+    *"of "*failed)  claimed=$(printf '%s' "$last" | awk '{print $3}') ;;
+    *) echo "test-counts: $t printed $printed assertions and no summary: [$last]"; fail=1; continue ;;
+  esac
+  case "$claimed" in ''|*[!0-9]*) echo "test-counts: $t summary is not a number: [$last]"; fail=1; continue ;; esac
+  if [ "$claimed" -ne "$printed" ]; then
+    echo "test-counts: $t claims $claimed assertions but printed $printed"
+    echo "             a case is counted twice, or counted without printing"
+    fail=1
+  fi
+done
+[ -n "$skipped" ] && echo "test-counts: skipped (printed no assertions):$skipped"
+[ "$fail" -eq 0 ] && echo "test-counts: every suite's total matches what it printed"
+exit $fail
