@@ -28,12 +28,19 @@
 #   view [<id>]   one pull request as JSON, on stdout. No id means "the one for
 #                 the current branch". The shape is FIELDS below.
 #   list          the ids of your open pull requests, one per line. --all only.
-#   wait <id>     OPTIONAL: block until checks settle. EXIT 3 means "I do not
-#                 implement this", and pr-watch polls view instead -- so --wait
-#                 works on every backend, not only the ones that wrote a waiter.
-#                 EXIT 3 IS THE ONLY CODE READ HERE: any other status ends the
-#                 wait and lets the verdict speak, because a waiter that failed
-#                 has not proved anything either way.
+#   wait <id>     OPTIONAL: block until checks settle. ANY non-zero exit -- the
+#                 verb unimplemented, the waiter broken, auth expired -- means
+#                 pr-watch polls view instead, so --wait works on every backend
+#                 rather than only the ones that wrote a waiter.
+#
+#                 There is deliberately no "not implemented" code. An earlier
+#                 draft reserved exit 3 for it, which collided with the rule
+#                 below: a provider that did as it was told and answered every
+#                 unknown verb with a non-zero default got a SILENTLY no-op
+#                 --wait, and the loop span calling it forever. Polling on any
+#                 failure has no such seam -- a waiter that failed has proved
+#                 nothing about the checks either way, and if the backend is
+#                 really down, view fails too and the poll gives up in three.
 #
 # A view that exits non-zero, or exits 0 printing nothing, is "could not tell"
 # and becomes exit 2. A provider that fails quietly must never be read as a
@@ -42,7 +49,8 @@
 # MUST exit non-zero for a verb it does not recognise. A `case` with no default
 # arm exits 0 silently, and for `list` that is indistinguishable from "no open
 # pull requests" -- which pr-watch reports as exit 0, a clean sweep. That is the
-# one shape where a broken provider can be mistaken for good news.
+# one shape where a broken provider can be mistaken for good news, and the
+# empty-list branch probes for it rather than trusting the rule.
 #
 # DERIVING mergeStateStatus. Not every host has one field for it, and BEHIND in
 # particular usually has none -- there is no "the base moved under this branch"
@@ -71,15 +79,25 @@ command -v jq >/dev/null || { echo "pr-watch: jq is not installed"; exit 2; }
 # Both seams below stand in for gh, so only demand gh when we will really call it.
 if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
   # -x alone is true for a directory, which then fails at exec with a message
-  # naming neither the variable nor the cause.
-  [ -f "$PR_WATCH_PROVIDER" ] && [ -x "$PR_WATCH_PROVIDER" ] || {
+  # naming neither the variable nor the cause. A bare name is resolved on PATH,
+  # because "$PR_WATCH_PROVIDER" view would have resolved it and rejecting it
+  # here contradicts the call that follows.
+  case "$PR_WATCH_PROVIDER" in
+    */*) [ -f "$PR_WATCH_PROVIDER" ] && [ -x "$PR_WATCH_PROVIDER" ] ;;
+    *)   command -v "$PR_WATCH_PROVIDER" >/dev/null 2>&1 ;;
+  esac || {
     echo "pr-watch: PR_WATCH_PROVIDER is not an executable file: $PR_WATCH_PROVIDER"; exit 2; }
-  for v in PR_WATCH_INTERVAL PR_WATCH_TIMEOUT; do
-    eval "_val=\${$v:-}"
+  for _var in PR_WATCH_INTERVAL PR_WATCH_TIMEOUT; do
+    eval "_val=\${$_var:-}"
     case "$_val" in
       ''|*[!0-9]*) [ -z "$_val" ] || {
-        echo "pr-watch: $v must be a whole number of seconds, got: $_val"; exit 2; } ;;
+        echo "pr-watch: $_var must be a whole number of seconds, got: $_val"; exit 2; } ;;
     esac
+    # Digits alone are not enough: a value near the integer ceiling wraps the
+    # deadline negative and the wait returns instantly, which is the same
+    # silent no-op the validation exists to prevent. A week is already absurd.
+    [ -n "$_val" ] && [ "$_val" -gt 604800 ] && {
+      echo "pr-watch: $_var is larger than a week ($_val); refusing"; exit 2; }
   done
 elif [ -z "${PR_WATCH_JSON:-}" ]; then
   command -v gh >/dev/null || { echo "pr-watch: gh is not installed"; exit 2; }
@@ -241,7 +259,18 @@ if [ "$ALL" -eq 1 ]; then
   else
     nums=$(gh pr list --author "@me" --state open --json number -q '.[].number' 2>/dev/null)
   fi || { echo "pr-watch: could not list pull requests"; exit 2; }
-  [ -n "$nums" ] || { echo "No open pull requests."; exit 0; }
+  # An empty list is genuinely the same as "no open pull requests" -- but so is
+  # a provider whose `case` has no default arm. One exec on an already-idle path
+  # tells them apart: a conforming provider fails an unknown verb.
+  if [ -z "$nums" ]; then
+    if [ -n "${PR_WATCH_PROVIDER:-}" ] && [ -z "${PR_WATCH_JSON:-}" ] \
+       && "$PR_WATCH_PROVIDER" __pr_watch_probe__ >/dev/null 2>&1; then
+      echo "pr-watch: provider returned no pull requests, and exits 0 for an"
+      echo "          unknown verb — so an empty list cannot be believed."
+      exit 2
+    fi
+    echo "No open pull requests."; exit 0
+  fi
   rc=0
   for n in $nums; do
     j=$(fetch "$n") || j=""
@@ -258,12 +287,11 @@ fi
 
 if [ "$WAIT" -eq 1 ] && [ -z "${PR_WATCH_JSON:-}" ]; then
   if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
-    # Exit 3 is the provider saying it has no waiter, and only that -- any other
-    # failure is left alone for the verdict below to report.
+    # Any failure means the wait did not happen, whatever the reason, so poll.
     wrc=0
     if [ -n "$PR" ]; then "$PR_WATCH_PROVIDER" wait "$PR" >/dev/null 2>&1 || wrc=$?
     else "$PR_WATCH_PROVIDER" wait >/dev/null 2>&1 || wrc=$?; fi
-    [ "$wrc" -eq 3 ] && settle "$PR"
+    [ "$wrc" -ne 0 ] && settle "$PR"
   # gh already implements the waiting. Its exit status is informational here --
   # the verdict below decides, not this call.
   elif [ -n "$PR" ]; then gh pr checks "$PR" --watch >/dev/null 2>&1 || true

@@ -48,18 +48,28 @@ The provider is any executable answering three verbs:
 | --- | --- |
 | `view [<id>]` | one pull request as JSON, on stdout. No id means the current branch |
 | `list` | ids of your open pull requests, one per line. `--all` only |
-| `wait <id>` | **optional**: block until checks settle. Exit `3` means "not implemented", and `pr-watch` polls `view` instead |
+| `wait <id>` | **optional**: block until checks settle. **Any** non-zero exit — unimplemented, broken, auth expired — makes `pr-watch` poll `view` instead |
 
 A `view` that exits non-zero, or exits `0` printing nothing, is "could not tell" and becomes
 exit `2`. A provider that fails quietly must never read as a clean pull request.
 
-For `wait`, exit `3` is the only status read: any other ends the wait and lets the verdict
-speak, since a waiter that failed has proved nothing either way.
+**There is deliberately no "not implemented" exit code for `wait`.** An earlier draft
+reserved `3`, which collided with the rule below: a provider that did as it was told and
+answered every unknown verb with a non-zero default got a *silently no-op* `--wait`, and a
+loop calling `pr-watch --wait` span forever on an instant exit `1`. Polling on any failure
+has no such seam — and if the backend is genuinely down, `view` fails too and the poll gives
+up after three.
 
 **A provider MUST exit non-zero for a verb it does not recognise.** A `case` with no default
 arm exits `0` silently, and for `list` that is indistinguishable from "no open pull requests"
-— which is reported as exit `0`, a clean sweep. It is the one shape where a broken provider
-can be mistaken for good news, and `pr-watch` cannot detect it.
+— reported as exit `0`, a clean sweep. On the empty-list path `pr-watch` spends one exec
+probing an unknown verb to tell the two apart, so this is enforced rather than advisory.
+
+**Three fields are silently green when absent**, and that is the shape a half-written
+provider takes: no `statusCheckRollup` reads as "no checks", no `isDraft` as `false`, and no
+`reviewDecision` turns READY FOR REVIEW into READY TO MERGE. A `view` returning only
+`number`/`title`/`state`/`mergeable`/`mergeStateStatus` reports READY TO MERGE, exit `0`.
+Emit all of them, empty rather than absent.
 
 The JSON shape is the `FIELDS` list in `bin/pr-watch`. Two things to get right:
 
@@ -68,8 +78,9 @@ The JSON shape is the `FIELDS` list in `bin/pr-watch`. Two things to get right:
   branch's current tip. A provider that omits it reports a stale `CLEAN`, and a verdict goes
   stale the moment the base moves.
 - **Polling knobs** for the `wait` fallback: `PR_WATCH_INTERVAL` (default 30s, floored at 1s)
-  and `PR_WATCH_TIMEOUT` (default 1800s). Both must be whole numbers of seconds; a typo is
-  exit `2`, not a silently disabled wait. A single failed poll is a hiccup, not an answer —
+  and `PR_WATCH_TIMEOUT` (default 1800s, capped at a week). Both must be whole numbers of
+  seconds; a typo — or a value near the integer ceiling, which wraps the deadline negative
+  and returns instantly — is exit `2`, not a silently disabled wait. A single failed poll is a hiccup, not an answer —
   three consecutive failures end the wait.
 
 This deliberately differs from how `pm` handles backends. `pm` *ships* its providers, because

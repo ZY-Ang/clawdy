@@ -214,10 +214,24 @@ bad_assert view-json-but-fails 2
 
 # A directory passes -x, then fails at exec with a message naming neither the
 # variable nor the cause.
+# The old -x-only guard also exited 2 here -- by failing at exec with
+# "Permission denied", naming neither the variable nor the cause. The fix is
+# the message, so the message is what gets asserted.
 ran=$((ran + 1))
-PR_WATCH_PROVIDER="$TMP" sh "$BIN" >/dev/null 2>&1
-if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2\n' provider-is-a-dir
-else fails=$((fails + 1)); printf 'FAIL %-22s\n' provider-is-a-dir; fi
+out=$(PR_WATCH_PROVIDER="$TMP" sh "$BIN" 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'not an executable file' \
+   && ! printf '%s' "$out" | grep -q 'Permission denied'
+then printf 'ok   %-22s exit 2, names the variable\n' provider-is-a-dir
+else fails=$((fails + 1)); printf 'FAIL %-22s exit %s: %s\n' provider-is-a-dir "$rc" "$out"; fi
+
+# A bare name is resolved on PATH: rejecting it would contradict the exec that
+# follows, which would have found it.
+ran=$((ran + 1))
+cp "$TMP/prov" "$TMP/bin-prov" 2>/dev/null || mkprov clean-approved
+mkprov clean-approved; cp "$TMP/prov" "$TMP/onpath"
+out=$(PATH="$TMP:$PATH" PR_WATCH_PROVIDER=onpath sh "$BIN" 2>&1); rc=$?
+if [ "$rc" -eq 0 ]; then printf 'ok   %-22s resolved on PATH\n' provider-bare-name
+else fails=$((fails + 1)); printf 'FAIL %-22s exit %s: %s\n' provider-bare-name "$rc" "$out"; fi
 
 # A list that exits 0 printing nothing is genuinely indistinguishable from "no
 # open pull requests", which IS exit 0. Pinned so the reading is deliberate:
@@ -264,6 +278,68 @@ chmod +x "$TMP/mixed"
 PR_WATCH_PROVIDER="$TMP/mixed" sh "$BIN" --all >/dev/null 2>&1
 if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2 beats 1\n' all-worst-wins
 else fails=$((fails + 1)); printf 'FAIL %-22s\n' all-worst-wins; fi
+
+# The other order is the one that pins the guard: unreadable FIRST, then a
+# merely-not-ready sibling, which must not overwrite the 2 with a 1.
+ran=$((ran + 1))
+cat > "$TMP/mixed2" <<MIXED2
+#!/bin/sh
+case "\$1" in
+  list) printf '42\\n43\\n' ;;
+  view) if [ "\$2" = 43 ]; then cat "$TMP/behind.json"; else exit 1; fi ;;
+  *) exit 2 ;;
+esac
+MIXED2
+chmod +x "$TMP/mixed2"
+PR_WATCH_PROVIDER="$TMP/mixed2" sh "$BIN" --all >/dev/null 2>&1
+if [ $? -eq 2 ]; then printf 'ok   %-22s unreadable first still 2\n' all-worst-wins-rev
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' all-worst-wins-rev; fi
+
+# --all must honour the view status too, not just its stdout -- the single-PR
+# path pins this and the loop had no equivalent.
+ran=$((ran + 1))
+cat > "$TMP/allliar" <<LIAR
+#!/bin/sh
+case "\$1" in
+  list) printf '42\\n' ;;
+  view) cat "$TMP/clean-approved.json"; exit 1 ;;
+  *) exit 2 ;;
+esac
+LIAR
+chmod +x "$TMP/allliar"
+PR_WATCH_PROVIDER="$TMP/allliar" sh "$BIN" --all >/dev/null 2>&1
+if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2\n' all-view-json-but-fails
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' all-view-json-but-fails; fi
+
+# THE COLLISION. A provider that obeys "exit non-zero for an unknown verb" with
+# a default arm and no wait arm used to get a silently no-op --wait: the
+# fallback fired only on exactly 3, so the loop span forever on an instant
+# exit 1 with nothing saying the wait had been skipped.
+ran=$((ran + 1))
+: > "$TMP/prov.log"
+cat > "$TMP/nowaitarm" <<NW
+#!/bin/sh
+echo "\$@" >> "$TMP/prov.log"
+case "\$1" in
+  view) n=\$(grep -c '^view' "$TMP/prov.log")
+        if [ "\$n" -lt 2 ]; then cat "$TMP/pending-checks.json"
+        else cat "$TMP/clean-approved.json"; fi ;;
+  *) exit 2 ;;
+esac
+NW
+chmod +x "$TMP/nowaitarm"
+out=$(PR_WATCH_PROVIDER="$TMP/nowaitarm" PR_WATCH_INTERVAL=1 PR_WATCH_TIMEOUT=20 sh "$BIN" 42 --wait 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && [ "$(grep -c '^view' "$TMP/prov.log")" -ge 2 ]
+then printf 'ok   %-22s no wait arm still polls\n' wait-default-arm-polls
+else fails=$((fails + 1)); printf 'FAIL %-22s exit %s, views %s\n' wait-default-arm-polls "$rc" "$(grep -c '^view' "$TMP/prov.log")"; fi
+
+# An empty list from a provider that ALSO exits 0 for an unknown verb cannot be
+# believed -- that is the fall-through shape, not an idle queue.
+ran=$((ran + 1))
+badprov 'case "$1" in list) exit 0 ;; esac'
+PR_WATCH_PROVIDER="$TMP/bad" sh "$BIN" --all >/dev/null 2>&1
+if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2\n' list-empty-nonconforming
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' list-empty-nonconforming; fi
 
 # --- a hiccup mid-poll is not an answer ---------------------------------------
 # One failed view used to end the wait as though checks had settled.
