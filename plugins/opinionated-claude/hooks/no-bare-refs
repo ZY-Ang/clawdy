@@ -59,6 +59,9 @@
 # - "# 42" (space between marker and digits) is not matched.
 # - `project#123` -- a single segment, no slash -- is not matched. It is
 #   lexically identical to `PR#63`, and no rule fires on one without the other.
+#   This is true of `#` ONLY: `sqlgate!406` IS matched, because "!" glued to
+#   digits after a word is not something English writes, so there is no
+#   word-glue case to protect on that marker.
 # - a scheme-less URL ("example.com/docs/page#123") reads as a project path and
 #   is matched. Writing the scheme is the fix, and is what the guard wants anyway.
 # - a URL whose PATH contains a comma or a bracket stops the strip early, and the
@@ -145,6 +148,14 @@ REFS=$(printf '%s' "$TEXT" | awk '
         # leading segment may be empty so that the SECOND ref in "a#1/b#2" is
         # still reported rather than silently dropped.
         if (match(pre, /[A-Za-z0-9._-]*(\/[A-Za-z0-9._-]*)+$/))
+          print substr(pre, RSTART, RLENGTH) m
+        # A SLASH-LESS prefix, but only before "!". The collision that forced
+        # the slash rule is "#" alone -- PR#63, step#2, a hex colour -- and it
+        # has no counterpart on "!", because English does not glue "!" to bare
+        # digits after a word. So sqlgate!406, the short form people actually
+        # type, fires; project#123 stays exempt, since nothing but per-repo
+        # knowledge of project names could tell it from PR#63.
+        else if (substr(m, 1, 1) == "!" && match(pre, /[A-Za-z0-9._-]+$/))
           print substr(pre, RSTART, RLENGTH) m
       } else if (pre !~ /[#!]$/) {
         print m
