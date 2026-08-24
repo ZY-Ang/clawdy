@@ -1,0 +1,37 @@
+#!/bin/sh
+# No GNU-only sed constructs in shipped scripts.
+#
+# `\+`, `\?` and `\|` are GNU extensions to basic regular expressions. POSIX and
+# BSD sed -- which is what macOS ships -- read them as LITERAL characters, so the
+# expression silently matches something else instead of failing.
+#
+# That is what makes it worth a guard rather than a code review note: it does not
+# error anywhere. `s/[^a-z0-9]\+/-/g` collapses runs of non-alphanumerics on
+# Linux and matches a literal "+" on macOS, so a title with spaces kept its
+# spaces, the filename kept them, and a loop over unquoted output then split one
+# note into six phantom entries with no id. Nothing failed; the count was just
+# wrong. See issue 50.
+#
+# The portable forms need no -E:
+#   \+   ->  the atom repeated:  [^x][^x]*
+#   \?   ->  \{0,1\}
+#   \|   ->  two -e expressions, or a bracket
+#
+#   sh .github/bin/posix-sed
+set -u
+fail=0
+for f in plugins/*/bin/* plugins/*/lib/*.sh plugins/*/hooks/* .github/bin/*; do
+  [ -f "$f" ] || continue
+  case "$f" in *.json|*.md|*.test.sh|*/posix-sed) continue ;; esac
+  # Code lines only. A comment explaining the trap is not the trap, and the
+  # first version of this guard flagged its own explanation of it.
+  hits=$(grep -n 'sed' "$f" 2>/dev/null | grep -v '^[0-9]*: *#' | grep -E '\\\+|\\\?|\\\|' || true)
+  [ -n "$hits" ] || continue
+  printf '%s\n' "$hits" | while IFS= read -r line; do
+    printf 'posix-sed: %s:%s\n' "$f" "$line"
+  done
+  echo "           GNU-only BRE escape in a sed expression; BSD sed reads it literally"
+  fail=1
+done
+[ "$fail" -eq 0 ] && echo "posix-sed: no GNU-only sed escapes in shipped scripts"
+exit $fail

@@ -160,6 +160,63 @@ else
   bad "a note was written for the axed task"
 fi
 
+# --- a title with spaces ------------------------------------------------------
+# One filing produced FIVE entries in `questions list`, all with an empty id, so
+# the reminder hook printed an id that could never be cleared. Two causes, both
+# invisible until a title contains a space.
+#
+# 1. slugify used `\+`, a GNU extension. POSIX and BSD sed read it as a literal
+#    "+", so on macOS the spaces survived into the filename.
+# 2. `for f in $(all_notes)` word-splits on IFS, so one path with five spaces
+#    became six "notes".
+reset; gh_absent
+call ask-async "a title with spaces here" --blocked-on access \
+  --context ctx --option "A|why" --assume "A meanwhile" >/dev/null 2>&1
+
+n=$(find "$CLAUDE_QUESTIONS_DIR" -name '*.md' 2>/dev/null | wc -l)
+[ "$n" -eq 1 ] && ok "one filing writes exactly one note" || bad "note count" "wrote $n"
+
+spaced=$(find "$CLAUDE_QUESTIONS_DIR" -name '* *' 2>/dev/null | wc -l)
+[ "$spaced" -eq 0 ] && ok "the filename carries no spaces" \
+  || bad "spaces in filename" "$(find "$CLAUDE_QUESTIONS_DIR" -name '* *' | head -1)"
+
+# The user-visible half: the listing must agree with the disk.
+out=$(PATH="$TMP/bin:$PATH" sh "$BIN/questions" 2>&1)
+listed=$(printf '%s' "$out" | grep -cE '^\s+q-[0-9]+' || true)
+[ "$listed" -eq 1 ] && ok "questions lists exactly one entry" || bad "listing count" "listed $listed"
+
+# An empty id is what made the reminder unclearable, so the id must be there.
+id=$(printf '%s' "$out" | grep -oE 'q-[0-9]+' | head -1)
+[ -n "$id" ] && ok "the entry carries an id" || bad "empty id" "$out"
+
+# And the id must actually work, which is the whole point of printing it.
+if [ -n "$id" ]; then
+  PATH="$TMP/bin:$PATH" sh "$BIN/questions" close "$id" --reason superseded >/dev/null 2>&1 \
+    && ok "closing by that id succeeds" || bad "close by id failed" "$id"
+fi
+
+# THE PLATFORM-INDEPENDENT HALF. The cases above cannot see the word-splitting
+# on a GNU sed, because `\+` works there and no space ever reaches the filename.
+# A title is not the only way one gets there: a questions directory under a path
+# containing a space does it on every platform, which is what makes this
+# reproducible rather than a macOS-only report.
+SPACED="$TMP/dir with spaces/notes"
+rm -rf "$SPACED"; mkdir -p "$SPACED"
+( CLAUDE_QUESTIONS_DIR="$SPACED"; export CLAUDE_QUESTIONS_DIR
+  PATH="$TMP/bin:$PATH" sh "$BIN/ask-async" "plain title" --blocked-on access \
+    --context ctx --option "A|why" --assume "A meanwhile" >/dev/null 2>&1 )
+files=$(find "$SPACED" -name '*.md' 2>/dev/null | wc -l)
+[ "$files" -eq 1 ] && ok "one note written under a spaced directory" || bad "spaced dir note count" "$files"
+
+out=$( CLAUDE_QUESTIONS_DIR="$SPACED"; export CLAUDE_QUESTIONS_DIR
+       PATH="$TMP/bin:$PATH" sh "$BIN/questions" 2>&1 )
+listed=$(printf '%s' "$out" | grep -cE '^\s+q-[0-9]+' || true)
+[ "$listed" -eq 1 ] && ok "a spaced directory lists one entry, not several" \
+  || bad "spaced dir listing" "listed $listed from 1 file"
+
+id=$(printf '%s' "$out" | grep -oE 'q-[0-9]+' | head -1)
+[ -n "$id" ] && ok "and its id is not empty" || bad "spaced dir empty id" "$out"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)

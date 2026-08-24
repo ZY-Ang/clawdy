@@ -51,9 +51,10 @@ human_age() {
 
 all_notes() { find "$QUESTIONS_DIR" -name '*.md' -type f 2>/dev/null | sort -r; }
 find_note() {
-  for f in $(all_notes); do
+  _nl=$(mktemp); all_notes > "$_nl"
+  while IFS= read -r f; do
     [ "$(get_field "$f" id)" = "$1" ] && { printf '%s' "$f"; return 0; }
-  done
+  done < "$_nl"; rm -f "$_nl"
   return 1
 }
 titleof() { sed -n '1s/^# //p' "$1" 2>/dev/null; }
@@ -100,7 +101,8 @@ list)
   for d in "$QUESTIONS_DIR"/*/; do
     [ -d "$d" ] || continue
     header_done=0
-    for f in $(find "$d" -name '*.md' -type f 2>/dev/null | sort -r); do
+    _dl=$(mktemp); find "$d" -name '*.md' -type f 2>/dev/null | sort -r > "$_dl"
+    while IFS= read -r f; do
       total=$((total + 1))
       st=$(statusof "$f"); a=$(age_of "$f")
       [ "$st" = open ] && open=$((open + 1))
@@ -114,7 +116,7 @@ list)
       shown=$((shown + 1))
       mark=""; [ "$(get_field "$f" filed)" = "no" ] && mark=" [unsent]"
       printf '  %-8s %-9s %-4s %s%s\n' "$(get_field "$f" id)" "$st" "$(human_age "$a")" "$(titleof "$f")" "$mark"
-    done
+    done < "$_dl"; rm -f "$_dl"
   done
   [ "$total" -eq 0 ] && { echo "No notes yet."; exit 0; }
   [ "$shown" -eq 0 ] && { printf 'Nothing open. %s note(s) on disk.\n' "$total"; exit 0; }
@@ -176,14 +178,15 @@ close)
 prune)
   [ -n "$OLDER" ] || { echo "questions: prune needs --older-than, e.g. 30d" >&2; exit 2; }
   gone=0 kept_open=0
-  for f in $(all_notes); do
+  _nl=$(mktemp); all_notes > "$_nl"
+  while IFS= read -r f; do
     st=$(statusof "$f")
     # An open question is never pruned, however old. Age is what makes an
     # unanswered question worth looking at, not what makes it disposable.
     if [ "$st" = open ]; then kept_open=$((kept_open + 1)); continue; fi
     [ "$(age_of "$f")" -ge "$OLDER" ] || continue
     rm -f "$f" && gone=$((gone + 1))
-  done
+  done < "$_nl"; rm -f "$_nl"
   # Tidy up session directories that are now empty; leave the named ones alone.
   for d in "$QUESTIONS_DIR"/*/; do
     [ -d "$d" ] || continue
@@ -196,7 +199,8 @@ prune)
 sync)
   provider_available || { echo "questions: $(provider_name) is not available; nothing can be synced yet" >&2; exit 1; }
   sent=0 failed=0
-  for f in $(all_notes); do
+  _nl=$(mktemp); all_notes > "$_nl"
+  while IFS= read -r f; do
     [ "$(get_field "$f" filed)" = "no" ] || continue
     title=$(titleof "$f"); kind=$(get_field "$f" kind); [ -n "$kind" ] || kind=task
     body=$(sed -n '/^---$/,$p' "$f" | sed '1d')
@@ -219,7 +223,7 @@ sync)
     else
       printf '  FAIL  %s\n' "$title"; failed=$((failed + 1))
     fi
-  done
+  done < "$_nl"; rm -f "$_nl"
   [ "$sent" -eq 0 ] && [ "$failed" -eq 0 ] && { echo "Nothing to sync."; exit 0; }
   printf '\n%s sent, %s still unsent.\n' "$sent" "$failed"
   [ "$failed" -eq 0 ]

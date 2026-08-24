@@ -23,10 +23,13 @@ QUESTIONS_DIR=${CLAUDE_QUESTIONS_DIR:-$HOME/.claude/questions}
 q_session() { printf '%s' "${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-unsessioned}}"; }
 q_dir()     { printf '%s/%s' "$QUESTIONS_DIR" "$(q_session)"; }
 
+# `\+` is a GNU extension: POSIX and BSD sed read it as a LITERAL plus, so on
+# macOS the spaces survived and landed in the filename. `[^x][^x]*` is the
+# portable "one or more" and needs no -E.
 slugify() {
   printf '%s' "$1" \
     | tr '[:upper:]' '[:lower:]' \
-    | sed -e 's/[^a-z0-9]\+/-/g' -e 's/^-//' -e 's/-$//' \
+    | sed -e 's/[^a-z0-9][^a-z0-9]*/-/g' -e 's/^-//' -e 's/-$//' \
     | cut -c1-48
 }
 
