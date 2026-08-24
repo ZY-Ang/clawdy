@@ -43,6 +43,22 @@ blocks "refs after a sentence" "That is the fix.
 
 Fixed the retry, then pushed. See #55 for the remaining guard work."
 
+# --- path-prefixed refs: the form other hosts actually print --------------------
+# On a host where a project is a PATH rather than a flat owner/repo,
+# group/subgroup/project!123 is the ordinary way to cite a merge request. The
+# word-glue carve-out below hid it: the character before the marker is a
+# letter, so the original class never fired. A slash in the prefix is what
+# separates the two -- PR#63 has none, a project path always has one.
+blocks "a path-prefixed MR ref"    "The pipeline change is up.
+
+See group/project!123 for the fix."
+blocks "a subgroup path, nested"   "The pipeline change is up.
+
+See group/subgroup/project!123 for the fix."
+blocks "a path-prefixed issue ref" "That is tracked already.
+
+See group/project#123 for the detail."
+
 # --- what must still pass -----------------------------------------------------
 allows "full URLs"           "Waiting on your merge of:
 
@@ -66,6 +82,53 @@ Nothing else to add.'
 # The # exclusion is exercised here: ##42 must not match, or a markdown
 # heading with a digit would block. The earlier case said "## Two rules" and
 # had no digit to exclude -- it passed with the class wrong.
+# Path-shaped matching would otherwise read a URL path as a project path, so
+# bare URLs are stripped before matching. A ref already written as a URL is
+# self-evidently not a bare one.
+allows "a bare URL with a numeric fragment" "The anchor is at https://example.com/docs/page#123."
+allows "a bare URL ending in a ref path"    "See https://gitlab.com/group/project/-/merge_requests/123 for it."
+allows "http, not only https"               "The anchor is at http://example.com/docs/page#123."
+# Any scheme carries the same path shape. Matching only http would read these
+# as project refs and block them.
+allows "an uppercase scheme"                "The anchor is at HTTPS://example.com/docs/page#123."
+allows "a non-web scheme"                   "See ftp://host.com/pub/dir/file#12 there."
+allows "a compound scheme"                  "Clone git+ssh://git@host/group/project#123 now."
+allows "a quote-wrapped URL"                'See "https://a.com/b/c#42" there.'
+# The stop class earns its keep here: a quoted URL followed by a real ref.
+blocks "a ref after a quoted URL"           'See "https://a.com/b"#64 now.'
+
+# THE BOUNDARY. A URL is routinely followed by punctuation and then a real ref.
+# Stripping to the next space swallowed the ref with it and the guard fell
+# silent -- the exact case it exists for. Each of these blocked before path
+# matching was added and must still block.
+blocks "a ref after a URL and a comma"  "Details: https://github.com/o/r/pull/12,#64,#65."
+blocks "a ref after a URL in brackets"  "Fixed in https://github.com/o/r/pull/12(#64 has the detail)."
+blocks "a ref after emphasis marks"     "The change is up.
+
+**https://github.com/o/r/pull/12**#64 is next."
+blocks "a ref after a URL and a semicolon" "See https://a.com/b;#64."
+blocks "a ref after an angle-bracketed URL" "See <https://a.com/b>#64 for it."
+
+# A trailing slash sat between the two patterns: too path-shaped for the bare
+# grep, and with nothing after the slash for the pathed one.
+blocks "a path with a trailing slash"   "See group/project/#123 here."
+
+# The documented exemption, pinned like the other known limits. project#123 is
+# lexically identical to PR#63; no rule fires on one without the other.
+allows "a single segment stays exempt"  "The project#123 build is green."
+
+# The pathed grep must run on the STRIPPED text, like the bare one. Without
+# these, gutting the fence, link and code-span strips for PATHED alone left the
+# suite fully green.
+allows "a pathed ref in backticks"      'The message says `group/project!123` fails.'
+allows "a pathed ref in a link"         "See [group/project!123](https://host/group/project/-/merge_requests/123)."
+allows "a pathed ref in a fence"        'It fails like this:
+
+```
+group/project!123
+```
+
+Nothing else.'
 allows "##42 heading, no match" "##42 the rule, at last."
 # A markdown link already carries its URL; its link text is not a bare
 # citation. The first version blocked this and demanded the URL it had.
@@ -133,6 +196,15 @@ out=$(printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/n
 case "$out" in *'#64'*) ok "names the offending refs" ;; *) bad "names the refs" "$out" ;; esac
 case "$out" in *'https://github.com/OWNER/REPO'*) ok "shows the replacement shape" ;; *) bad "replacement shape" "$out" ;; esac
 case "$out" in *CLAUDE_REFERENCE_LINKS*) ok "and names the clickable-terminal escape" ;; *) bad "names the escape" "$out" ;; esac
+
+# A pathed ref is reported whole: "group/project!123" tells a reader which
+# project, which is the entire complaint. "!123" repeats the problem.
+printf '%s' "See group/project!123 for it." | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
+# Match the FIRST line only: the help text below it contains the literal
+# "group/project!123" as an example, so matching the whole message passes
+# whatever PATHED reports.
+out=$(printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/null | head -1)
+case "$out" in *'group/project!123'*) ok "names a pathed ref whole" ;; *) bad "names a pathed ref whole" "$out" ;; esac
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi

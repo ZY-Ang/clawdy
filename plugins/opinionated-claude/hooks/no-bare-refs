@@ -18,6 +18,16 @@
 #   [text](url)     a markdown link already carries its URL; its text is not a
 #                   bare citation
 #   `code`          quoting a reference is not citing one -- inline and fenced
+#   scheme://...    a ref already written as a URL is not a bare one, and a URL
+#                   path is shaped exactly like a project path (see below).
+#                   ANY scheme, not just http -- ftp:// and git+ssh:// carry the
+#                   same path shape, and would otherwise be read as project refs.
+#
+#                   The strip STOPS at ,;()<>"* -- a URL is routinely followed
+#                   by punctuation and then a real ref, and eating to the next
+#                   space swallowed it. "…/pull/12,#64" must still block #64.
+#                   A "#" with no separator before it is a fragment and goes
+#                   with the URL; one after punctuation is a citation.
 #
 # Fences are stripped only when they pair up. An odd fence is a typo, and
 # treating everything after it as code is how one stray backtick-triple hid
@@ -25,12 +35,36 @@
 # passed silently. With an odd count nothing is stripped -- blocking a ref
 # inside a malformed fence is the lesser evil than hiding the ones outside it.
 #
+# PATH-PREFIXED REFS. Where a project is identified by a path rather than a flat
+# owner/repo, `group/subgroup/project!123` is the ordinary way to cite a merge
+# request -- and it is just as unclickable as `#64`. The word-glue carve-out hid
+# it: the character before the marker is a letter, so the class never fired.
+#
+# A slash in the prefix is what separates the two cases. `PR#63` has none;
+# a project path always has at least one. Subgroups nest arbitrarily, so the
+# prefix is one-or-more segments, not a fixed depth.
+#
+# That pattern also fits a URL path, which is why bare URLs are stripped first.
+#
 # KNOWN LIMITS, deliberately:
 #
 # - "we're #1", "step #2", hex "#111" are blocked. Any bare #N could be a
 #   reference, and the cost of reading a citation as prose is higher than a
 #   one-word rewrite.
 # - "# 42" (space between marker and digits) is not matched.
+# - `project#123` -- a single segment, no slash -- is not matched. It is
+#   lexically identical to `PR#63`, and no rule fires on one without the other.
+# - a scheme-less URL ("example.com/docs/page#123") reads as a project path and
+#   is matched. Writing the scheme is the fix, and is what the guard wants anyway.
+# - a URL whose PATH contains a comma or a bracket stops the strip early, and the
+#   remnant is path-shaped: ".../@1,2/x#4" is matched. The comma cannot be both a
+#   URL character and a citation separator, and "…/pull/12,#64" losing its ref is
+#   the worse failure -- a false positive costs a rewrite, a false negative is the
+#   guard going quiet.
+# - a separator outside the stop class still eats the ref after it: "…/b--#64" is
+#   NOT matched. "-" cannot join the class; it is in almost every URL path.
+# - "project/#123" IS matched: the slash makes it path-shaped. Only the
+#   slash-less "project#123" is exempt.
 # - the word-glue carve-out assumes a space-delimited script: in a script that
 #   runs words together (CJK), "见#64" is still matched. That reads as
 #   blocking a citation, which is the guard working.
@@ -80,13 +114,22 @@ TEXT=$(printf '%s' "$LAST" \
         }
       }' \
   | sed 's/\[[^]]*\]([^)]*)//g' \
-  | sed 's/`[^`]*`//g; s/`[^`]*//g')
+  | sed 's/`[^`]*`//g; s/`[^`]*//g' \
+  | sed 's|[A-Za-z][A-Za-z0-9+.-]*://[^[:space:],;()<>"*]*||g')
 
 # Bare refs: #N or !N. The class before the marker excludes alphanumerics
 # (glued refs like PR#63), "/" (a # in a URL path), and the two markers
 # themselves (## headings, !!).
-REFS=$(printf '%s' "$TEXT" | grep -oE '(^|[^0-9A-Za-z/!#])[#!][0-9]+' \
-  | sed 's/^[^#!]//' | sort -u | tr '\n' ' ' | sed 's/ *$//')
+BARE=$(printf '%s' "$TEXT" | grep -oE '(^|[^0-9A-Za-z/!#])[#!][0-9]+' | sed 's/^[^#!]//')
+
+# Path-prefixed refs: two or more slash-joined segments glued to the marker.
+# Reported whole -- "group/project!123" says more to a reader than "!123".
+# The last segment may be empty, so a trailing slash ("group/project/#123")
+# does not let the ref through -- it sits between both patterns otherwise.
+PATHED=$(printf '%s' "$TEXT" | grep -oE '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]*)+[#!][0-9]+')
+
+REFS=$(printf '%s\n%s\n' "$BARE" "$PATHED" | grep -v '^[[:space:]]*$' \
+  | sort -u | tr '\n' ' ' | sed 's/ *$//')
 
 [ -n "$REFS" ] || exit 0
 
@@ -99,6 +142,7 @@ it. Write the full URL instead:
   - not "Filed #64."           ->  "Filed https://github.com/OWNER/REPO/issues/64."
   - not "see #65, then #55."   ->  "see https://github.com/OWNER/REPO/issues/65,
                                     then https://github.com/OWNER/REPO/issues/55."
+  - not "group/project!123"    ->  "https://HOST/group/project/-/merge_requests/123"
 
 If this terminal renders #N and !N as clickable links, that is the exception --
 and since this hook cannot see the terminal, record it once:
