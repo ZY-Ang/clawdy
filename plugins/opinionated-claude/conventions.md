@@ -235,6 +235,35 @@ Two things this rule means in practice:
 - Commit messages explain **why**, not what — the diff already says what. When a change exists
   because something broke, say what broke.
 
+## Clean up after yourself, without asking
+
+**Work that is finished leaves debris. Removing it is part of the task, not a decision to
+escalate.** Asking a human whether to delete something you have already proved is dead spends
+their attention on a question you answered before asking it.
+
+Delete, having verified, and say what you deleted:
+
+- **A branch whose work is on the default branch.** Verify first — the work may have landed by
+  a different route, under a different commit, with a different message. Check the *substance*
+  is present, not that the commit is. Then `git push origin --delete <branch>`.
+- **A local branch or worktree whose pull request merged or closed.**
+- **Scratch files, fixtures and temporary directories** your own run created.
+- **A stale issue** — see the `backlog` skill, which owns that rule.
+
+**Ask first only where deletion destroys the only copy**: uncommitted work, a branch with
+commits that exist nowhere else, data with no backup, anything a rebuild cannot recreate. The
+test is not "is this irreversible" — pushing a branch deletion is irreversible — it is "is
+anything lost that cannot be recovered from what remains".
+
+**The failure this exists to stop.** Seven branches sat on one repository for days, every one
+holding work already present on `main`. An agent checked all seven, confirmed every one was
+superseded, wrote the seven delete commands out in full — and then asked the owner to run them.
+The verification was the hard part and it was already done; what remained was typing. The
+question cost a round trip and taught the owner that "I checked everything" does not mean the
+checking will be acted on.
+
+Recorded at https://github.com/ZY-Ang/clawdy/issues/39.
+
 ## Think before coding
 
 - State assumptions explicitly. If genuinely uncertain, say so and proceed on the most

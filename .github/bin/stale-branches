@@ -1,0 +1,59 @@
+#!/bin/sh
+# Remote branches whose work is already on the default branch.
+#
+# Not "merged into main" -- `git branch --merged` misses the case that actually
+# accumulates, where the work landed by a different route: squashed, re-landed
+# under a different message, or rewritten in review. Those branches show as
+# unmerged forever and nobody can tell without reading each one.
+#
+# Compares CONTENT: a branch is dead when every file it changes is already
+# identical on the default branch. That covers the common case -- a branch left
+# behind after its pull request merged.
+#
+# WHAT IT CANNOT SEE, stated plainly so nobody trusts a clean run too far: a
+# branch cut from an old base carries the whole history, so its diff against the
+# default branch includes everything the default branch gained since. Those files
+# are NOT identical and the branch reads as live, even when its own work landed
+# long ago by another route. `git cherry` does not help either -- re-landed work
+# has a different patch id, so every commit still reports as unmerged.
+#
+# That case needs a person or an agent to check the SUBSTANCE: does the thing
+# this branch was for exist on the default branch now? Seven such branches were
+# found by hand on this repository (see the cleanup rule in
+# opinionated-claude/conventions.md). This tool would have reported all seven as
+# live.
+#
+#   sh .github/bin/stale-branches            # list them
+#   sh .github/bin/stale-branches --commands # the delete commands, to run
+#
+# Deleting is the caller's move, but per the cleanup rule an agent that has
+# verified them should run the commands rather than ask.
+set -u
+REMOTE=${REMOTE:-origin}
+BASE=${BASE:-$REMOTE/main}
+MODE=${1:-list}
+git fetch "$REMOTE" --quiet 2>/dev/null || :
+
+found=0
+for ref in $(git for-each-ref --format='%(refname:short)' "refs/remotes/$REMOTE" 2>/dev/null); do
+  case "$ref" in "$REMOTE/HEAD"|"$BASE") continue ;; esac
+  files=$(git diff --name-only "$BASE...$ref" 2>/dev/null) || continue
+  [ -n "$files" ] || continue
+  dead=1
+  for f in $files; do
+    # Identical on both sides, or absent from both. Anything else is live work.
+    a=$(git rev-parse "$BASE:$f" 2>/dev/null || echo absent)
+    b=$(git rev-parse "$ref:$f" 2>/dev/null || echo absent)
+    [ "$a" = "$b" ] || { dead=0; break; }
+  done
+  if [ "$dead" -eq 1 ]; then
+    found=$((found + 1))
+    b=${ref#"$REMOTE"/}
+    case "$MODE" in
+      --commands) printf 'git push %s --delete %s\n' "$REMOTE" "$b" ;;
+      *) printf 'stale: %s (every file it touches is already identical on %s)\n' "$b" "$BASE" ;;
+    esac
+  fi
+done
+[ "$found" -eq 0 ] && [ "$MODE" != "--commands" ] && echo "stale-branches: none"
+exit 0

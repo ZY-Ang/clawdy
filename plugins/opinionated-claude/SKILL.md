@@ -132,6 +132,12 @@ become public because it informed the design. Write the shape, not the inventory
 **Git** — never commit to `main` unbidden, worktrees for concurrent agents, commit messages
 that explain why rather than what.
 
+**Clean up after yourself, without asking** — a branch whose work is on the default branch, a
+worktree whose pull request closed, scratch files your own run made. Verify the work landed —
+it may have arrived by a different route under a different commit — then delete it and say what
+you deleted. Ask only where deletion destroys the only copy. Written because an agent verified
+seven dead branches, wrote out the seven delete commands, and then asked the owner to run them.
+
 **Think before coding · Simplicity first · Surgical changes · Goal-driven execution · Code
 comments** — the minimum that solves the problem, no speculative abstractions, no improving
 adjacent code, every changed line traceable to the request, comments that explain the code

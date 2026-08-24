@@ -230,6 +230,48 @@ answer, which is the `needs-human`-outlives-the-answer bug seen from the other s
 
 `axes` skips `needs-human` issues. A question is not queued; it gets its axes when it becomes work.
 
+## Closing what is no longer real
+
+**A backlog decays from the top as well as the bottom.** Issues get filed, the world moves, and
+some of them stop describing anything true — but nothing removes them, so they keep taking a
+position in the order and a moment of attention every time it is read.
+
+`backlog-triage` finds shapes that are wrong. This is the other half: issues that are *stale*
+rather than malformed. Four kinds, all of which an agent should close on its own evidence:
+
+| Shape | How to be sure |
+| --- | --- |
+| **Already fixed** | The behaviour it describes no longer reproduces. Run the exact command in the issue |
+| **Precondition met** | It said "decide when X exists". X exists. Answer it and close it |
+| **Superseded** | A later issue narrowed or replaced it. Name the successor |
+| **Wrong** | It does not reproduce and never did. Say what the real cause was |
+
+**Reproduce before closing, and put the output in the comment.** A close with no evidence is
+indistinguishable from a close because the list was long. The comment is what stops the same
+issue being re-filed in a month by someone who cannot tell why it went away.
+
+**`--as` records which of the four it was**: `completed` for fixed, `not-planned` for wrong or
+withdrawn, `duplicate` for superseded. Six weeks later that distinction is the whole record.
+
+```sh
+reply-issue 5 --body - --closes --as completed <<'EOF'
+Reproduced against main: <the command, and its output>
+EOF
+```
+
+**Two shapes that look closable and are not.** An issue nobody has *started* is not stale — it
+is queued, which is what the order is for. An issue whose fix is on an unmerged branch is not
+closed either; it closes when that branch merges, and closing early loses the link between the
+work and the reason for it.
+
+**The failure this exists to stop.** One issue said to decide a design question "when a second
+implementation exists rather than guessing". The second implementation was built, it answered
+the question, and the issue stayed open — because the answer arrived as a comment and nothing
+in the loop treated "the precondition is met" as a reason to close. It sat in the ready queue
+for a further six ticks while the loop reported nothing was workable.
+
+Recorded at https://github.com/ZY-Ang/clawdy/issues/5.
+
 ## Recording that one thing blocks another
 
 ```bash
