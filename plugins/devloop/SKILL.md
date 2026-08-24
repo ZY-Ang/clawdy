@@ -65,6 +65,11 @@ arm exits `0` silently, and for `list` that is indistinguishable from "no open p
 — reported as exit `0`, a clean sweep. On the empty-list path `pr-watch` spends one exec
 probing an unknown verb to tell the two apart, so this is enforced rather than advisory.
 
+**Stdin is closed on every provider call.** None of the verbs takes input — they take
+arguments — and an unattended loop's stdin is open and never delivers, so a prompt anywhere in
+the chain hangs the run forever. A provider that shells out to something expecting a passphrase
+gets EOF, not a prompt.
+
 **Three fields are silently green when absent**, and that is the shape a half-written
 provider takes: no `statusCheckRollup` reads as "no checks", no `isDraft` as `false`, and no
 `reviewDecision` turns READY FOR REVIEW into READY TO MERGE. A `view` returning only

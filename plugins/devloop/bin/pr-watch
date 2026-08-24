@@ -42,6 +42,11 @@
 #                 nothing about the checks either way, and if the backend is
 #                 really down, view fails too and the poll gives up in three.
 #
+# STDIN IS CLOSED on every provider call. None of the verbs takes input -- they
+# take arguments -- and an unattended loop's stdin is open and never delivers,
+# so a prompt anywhere in the chain hangs the run forever. A provider that
+# shells out to something expecting a passphrase gets EOF, not a prompt.
+#
 # A view that exits non-zero, or exits 0 printing nothing, is "could not tell"
 # and becomes exit 2. A provider that fails quietly must never be read as a
 # clean pull request.
@@ -105,10 +110,12 @@ if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
     #
     # LENGTH FIRST. Past intmax, `[ -gt ]` ERRORS rather than answering false --
     # the AND-list then fails, execution carries on, and the enormous value
-    # sails through the check written to stop it. Seven digits already exceeds
-    # a week, so no legitimate value reaches the numeric compare.
+    # sails through the check written to stop it. The cut is 19 digits, not
+    # seven: 18 is the widest [ -gt ] compares safely, and a shorter cut called
+    # 0000001 "larger than a week", which is untrue.
     case "$_val" in
-      ???????*) echo "pr-watch: $_var is larger than a week ($_val); refusing"; exit 2 ;;
+      ???????????????????*)
+        echo "pr-watch: $_var is too large to compare ($_val); refusing"; exit 2 ;;
     esac
     [ -n "$_val" ] && [ "$_val" -gt 604800 ] && {
       echo "pr-watch: $_var is larger than a week ($_val); refusing"; exit 2; }
@@ -296,7 +303,8 @@ if [ "$ALL" -eq 1 ]; then
   # grep -qv, not -q: the question is whether ANY line is not an id, not
   # whether some line is one.
   if printf '%s\n' "$nums" | grep -qvE '^[0-9]*$'; then
-    echo "pr-watch: provider list returned something that is not a pull request id"
+    echo "pr-watch: provider list must print ids as digits, one per line."
+    echo "          first offending line: $(printf '%s\n' "$nums" | grep -vE '^[0-9]*$' | head -1)"
     exit 2
   fi
   for n in $(printf '%s\n' "$nums" | grep -E '^[0-9]+$'); do

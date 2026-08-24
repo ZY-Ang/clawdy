@@ -376,7 +376,7 @@ else fails=$((fails + 1)); printf 'FAIL %-22s help was truncated\n' help-covers-
 ran=$((ran + 1))
 mkprov clean-approved
 out=$(PR_WATCH_TIMEOUT=99999999999999999999 PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" 42 --wait 2>&1); rc=$?
-if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'larger than a week' \
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -qE 'larger than a week|too large to compare' \
    && ! printf '%s' "$out" | grep -qi 'illegal number'
 then printf 'ok   %-22s exit 2, no [ error\n' timeout-past-intmax
 else fails=$((fails + 1)); printf 'FAIL %-22s exit %s: %s\n' timeout-past-intmax "$rc" "$out"; fi
@@ -389,6 +389,13 @@ ran=$((ran + 1))
 PR_WATCH_TIMEOUT=604800 PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" 42 >/dev/null 2>&1
 if [ $? -eq 0 ]; then printf 'ok   %-22s accepted\n' timeout-exactly-a-week
 else fails=$((fails + 1)); printf 'FAIL %-22s\n' timeout-exactly-a-week; fi
+
+# A length guard counts characters, not magnitude. At seven it called 0000001
+# "larger than a week", which is a false statement in an error message.
+ran=$((ran + 1))
+out=$(PR_WATCH_TIMEOUT=0000001 PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" 42 2>&1); rc=$?
+if [ "$rc" -eq 0 ]; then printf 'ok   %-22s accepted\n' timeout-zero-padded
+else fails=$((fails + 1)); printf 'FAIL %-22s exit %s: %s\n' timeout-zero-padded "$rc" "$out"; fi
 
 # --- provider stdout is not a trusted list of ids -----------------------------
 # gh's --json number could only emit digits. A provider's stdout cannot, and an
@@ -413,9 +420,14 @@ cat > "$TMP/errprov" <<ERRP
 case "\$1" in list) echo "error: token expired" ;; *) exit 2 ;; esac
 ERRP
 chmod +x "$TMP/errprov"
-PR_WATCH_PROVIDER="$TMP/errprov" sh "$BIN" --all >/dev/null 2>&1
-if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2\n' list-prose-rejected
-else fails=$((fails + 1)); printf 'FAIL %-22s\n' list-prose-rejected; fi
+# Exit 2 alone proves nothing here: without validation the words are iterated
+# as fake ids, each fetch fails, and 2 falls out anyway. The message and the
+# absence of per-"id" blocks are what distinguish the two.
+out=$(PR_WATCH_PROVIDER="$TMP/errprov" sh "$BIN" --all 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'must print ids as digits' \
+   && ! printf '%s' "$out" | grep -q 'could not read'
+then printf 'ok   %-22s exit 2, names the cause\n' list-prose-rejected
+else fails=$((fails + 1)); printf 'FAIL %-22s exit %s: %s\n' list-prose-rejected "$rc" "$out"; fi
 
 # --- a provider that reads stdin must not hang the run ------------------------
 # The probe passes a deliberately bogus verb, which is exactly what reaches a
