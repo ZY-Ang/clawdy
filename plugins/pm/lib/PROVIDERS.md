@@ -98,6 +98,18 @@ So the same backend has a dependency graph on one instance and none on another, 
 provider must neither assume nor hardcode either — the Enterprise instances people run at
 work have it, gitlab.com free does not.
 
+**Both ends of a directed edge report different types, so read the end you mean.** For
+"A is blocked by B", measured on a licensed instance:
+
+| call | `link_type` | the other side |
+| --- | --- | --- |
+| `GET /issues/A/links` | `is_blocked_by` | B — the blocker |
+| `GET /issues/B/links` | `blocks` | A |
+| `POST /issues/A/links link_type=is_blocked_by` | returns **`blocks`** | — |
+
+The POST response describes the link from the far end. Believing it instead of re-reading
+inverts the graph.
+
 **Never substitute a weaker edge for the one asked for.** `relates_to` is symmetric and
 carries no direction: recording a blocker as "related" would let the queue read a
 bidirectional edge as an ordering constraint and produce a confidently wrong order. No

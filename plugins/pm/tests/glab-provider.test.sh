@@ -67,6 +67,7 @@ case "\$1" in
       delete:*/links/*) exit 0 ;;
       view:*"/issues/1/notes"*) cat "$FIX/notes-answered-gitlab-shape.json" ;;
       view:*"/issues/2/notes"*) cat "$FIX/notes-blocked-gitlab-shape.json" ;;
+      view:*/issues/5/links*) cat "$FIX/links-blocked-gitlab-shape.json" ;;
       view:*/issues/*/links*) cat "$FIX/links-gitlab-shape.json" ;;
       view:*labels=needs-human*) cat "$FIX/issues-needs-human-gitlab-shape.json" ;;
       view:*"/issues?"*)  cat "$FIX/issues-gitlab-shape.json" ;;
@@ -134,7 +135,7 @@ nh=$(run provider_needs_human owner/repo)
 k=$(printf '%s' "$nh" | jq -r '.[0] | keys | sort | join(",")')
 [ "$k" = "comments,number,title" ] && ok "the contract keys, nothing else" || bad "contract keys" "got: $k"
 ck=$(printf '%s' "$nh" | jq -r '.[0].comments[0] | keys | sort | join(",")')
-case "$ck" in *author*body*) ok "comments carry author and body" ;; *) bad "comment keys" "got: $ck" ;; esac
+[ "$ck" = "author,body,createdAt,id" ] && ok "exactly the comment keys" || bad "comment keys" "got: $ck"
 # check-replies reads .author.login; GitLab's key is username. A provider that
 # passed the wire shape through would give every comment a null author.
 [ "$(printf '%s' "$nh" | jq -r '.[0].comments[0].author.login')" = "ZY-Ang" ] \
@@ -158,6 +159,36 @@ case "$last2" in "🤖"*) ok "issue 2: agent spoke last, still blocked" ;; *) ba
 last1=$(printf '%s' "$nh" | jq -r '.[] | select(.number == 1) | .comments | last | .body')
 case "$last1" in "🤖"*) bad "issue 1 last comment" "$last1" ;; *) ok "issue 1: human spoke last, answered" ;; esac
 
+# A BACKEND THAT CANNOT ANSWER IS NOT AN EMPTY BACKLOG. The suite had no
+# failing-backend case for needs-human at all, so a mutation turning a 401 into
+# [] with exit 0 -- the precise pretend-empty answer the header swears off --
+# passed everything.
+( PATH="$TMP/bin:$PATH"; FAKE_GLAB_FAIL=1; export FAKE_GLAB_FAIL
+  . "$LIB/provider-gitlab.sh"; provider_needs_human owner/repo >/dev/null 2>&1 )
+[ $? -eq 2 ] && ok "needs-human is 2 when the backend cannot answer" || bad "needs-human failure code"
+nhout=$( PATH="$TMP/bin:$PATH"; FAKE_GLAB_FAIL=1; export FAKE_GLAB_FAIL
+         . "$LIB/provider-gitlab.sh"; provider_needs_human owner/repo 2>/dev/null )
+[ -z "$nhout" ] && ok "and prints nothing rather than an empty list" || bad "needs-human printed on failure" "$nhout"
+
+# Only OPEN issues: a closed question is not waiting on anybody.
+ng="$TMP/log/nh.log"
+( PATH="$TMP/bin:$PATH"; FAKE_GLAB_LOG="$ng"; export FAKE_GLAB_LOG
+  . "$LIB/provider-gitlab.sh"; provider_needs_human owner/repo >/dev/null 2>&1 )
+case "$(cat "$ng" 2>/dev/null)" in
+  *"state=opened"*) ok "needs-human asks for open issues only" ;;
+  *) bad "state=opened missing" "$(head -1 "$ng" 2>/dev/null)" ;;
+esac
+
+# --- _glab_project -----------------------------------------------------------
+# Both encoding mutations survived: the fake matches projects/* and then globs
+# that accept either form, so the subgroup case the comment calls out was
+# unverified. A subgroup path has more than one slash to encode.
+enc() { ( . "$LIB/provider-gitlab.sh"; _glab_project "$1" && printf '%s' "$PM_PROJ" ); }
+[ "$(enc owner/repo)" = "owner%2Frepo" ] && ok "a flat path encodes" || bad "flat encode" "$(enc owner/repo)"
+[ "$(enc group/sub/proj)" = "group%2Fsub%2Fproj" ] && ok "a subgroup path encodes EVERY slash" \
+  || bad "subgroup encode" "$(enc group/sub/proj)"
+[ "$(enc a/b/c/d/e)" = "a%2Fb%2Fc%2Fd%2Fe" ] && ok "nesting is not capped" || bad "deep encode" "$(enc a/b/c/d/e)"
+
 # --- the dependency graph ----------------------------------------------------
 [ "$(run provider_issue_id 2 owner/repo)" = "2" ] && ok "issue_id is the iid, which links take" || bad "issue_id"
 
@@ -166,6 +197,27 @@ case "$last1" in "🤖"*) bad "issue 1 last comment" "$last1" ;; *) ok "issue 1:
 # blocker would invent an ordering constraint nobody recorded.
 bb=$(run provider_blocked_by 2 owner/repo)
 [ -z "$bb" ] && ok "relates_to is not a blocker" || bad "relates_to counted as a blocker" "$bb"
+# And the blocking edge IS reported, as the iid of the blocker.
+bb5=$(run provider_blocked_by 5 owner/repo)
+[ "$bb5" = "$(jq -r '.[0].iid' "$FIX/links-blocked-gitlab-shape.json")" ] \
+  && ok "an is_blocked_by edge yields the blocker's iid" || bad "blocked_by iid" "got: $bb5"
+
+# THE RULE THE SUITE COULD NOT SEE. Mutating provider_link to send relates_to
+# passed 51/51: the fake 403s without inspecting the fields, so nothing pinned
+# the loudest line in PROVIDERS.md -- "never substitute a weaker edge".
+lg="$TMP/log/link.log"
+( PATH="$TMP/bin:$PATH"; FAKE_GLAB_LOG="$lg"; export FAKE_GLAB_LOG
+  . "$LIB/provider-gitlab.sh"; provider_link 2 3 owner/repo >/dev/null 2>&1 )
+case "$(cat "$lg" 2>/dev/null)" in
+  *"link_type=is_blocked_by"*) ok "link asks for is_blocked_by, not a weaker edge" ;;
+  *) bad "link_type sent" "$(cat "$lg" 2>/dev/null)" ;;
+esac
+# -F, not -f: the typed flag. A string iid is coerced by this backend, but the
+# github provider's 422 came from exactly this and the flag says what is meant.
+case "$(cat "$lg" 2>/dev/null)" in
+  *"-F target_issue_iid"*) ok "the iid goes as a number, not a string" ;;
+  *) bad "iid flag" "$(cat "$lg" 2>/dev/null)" ;;
+esac
 
 # A licence without blocking links fails LOUDLY, carrying GitLab's own words.
 # Silently degrading to relates_to would record the wrong claim.
@@ -173,6 +225,25 @@ lk=$( PATH="$TMP/bin:$PATH"; . "$LIB/provider-gitlab.sh"; provider_link 2 3 owne
 case "$lk" in *"not available for current license"*) ok "link failure carries the licence message" ;; *) bad "link error" "$lk" ;; esac
 if ( PATH="$TMP/bin:$PATH"; . "$LIB/provider-gitlab.sh"; provider_link 2 3 owner/repo >/dev/null 2>&1 )
 then bad "link reports success on a 403"; else ok "link reports failure on a 403"; fi
+
+# unlink must DELETE the link's own id. The fake accepts any delete URL, so a
+# mutation sending the issue iid passed the whole suite -- the one thing this
+# function's comment says it exists to prevent.
+# Issue 5 in the fake serves links-blocked-gitlab-shape.json. That fixture is
+# the captured relates_to response with link_type flipped to is_blocked_by --
+# gitlab.com free cannot create a blocking link at all (403, licence), so the
+# enum value is the one thing that could not be captured there. It was verified
+# against a licensed instance: for "A is blocked by B", GET on A's side reports
+# is_blocked_by and GET on B's reports blocks. Everything else in the file is
+# off the wire.
+ug="$TMP/log/unlink.log"
+( PATH="$TMP/bin:$PATH"; FAKE_GLAB_LOG="$ug"; export FAKE_GLAB_LOG
+  . "$LIB/provider-gitlab.sh"; provider_unlink 5 3 owner/repo >/dev/null 2>&1 )
+want=$(jq -r '.[0].issue_link_id' "$FIX/links-blocked-gitlab-shape.json")
+case "$(grep DELETE "$ug" 2>/dev/null)" in
+  *"/links/$want"*) ok "unlink deletes the link id, not the issue iid" ;;
+  *) bad "unlink DELETE url" "$(grep DELETE "$ug" 2>/dev/null)" ;;
+esac
 
 # unlink needs the LINK's id, not either issue's. Passing an issue number there
 # deletes nothing; the lookup is the function's job, not the caller's.

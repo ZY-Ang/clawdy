@@ -38,6 +38,11 @@ _glab_write() {
 # and a subgroup path has more than one slash to encode. With no repo given,
 # glab is asked what the working directory maps to rather than guessing from
 # the git remote, so the answer matches whatever host it is configured for.
+# Sets PM_PROJ rather than printing it. Every caller used $( ), which runs a
+# subshell -- so the PROVIDER_ERR set on failure was discarded and the caller
+# printed whatever diagnostic an earlier call had left behind. That is the
+# inverse of "never discard the backend's diagnostic", and the same subshell
+# trap the read half already paid for once.
 _glab_project() {
   _r=${1:-}
   if [ -z "$_r" ]; then
@@ -47,7 +52,7 @@ _glab_project() {
   [ -n "$_r" ] || {
     PROVIDER_ERR="no project given, and none could be inferred from the working directory"
     return 1; }
-  printf '%s' "$_r" | sed 's|/|%2F|g'
+  PM_PROJ=$(printf '%s' "$_r" | sed 's|/|%2F|g')
 }
 
 provider_name() { printf 'gitlab'; }
@@ -254,25 +259,40 @@ provider_find_pr() {
 # The author key is `username`; the contract's consumer reads `.author.login`.
 provider_needs_human() {
   _repo=${1:-}
-  _tmp=${TMPDIR:-/tmp}/pm-gitlab.$$.nh
-  _proj=$(_glab_project "$_repo") || return 2
-  _glab_read api "projects/$_proj/issues?labels=needs-human&state=opened&per_page=${PM_LIMIT:-100}" \
-    > "$_tmp"
-  _rc=$?
-  [ "$_rc" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null; return "$_rc"; }
+  _tmp=$(mktemp)
+  _glab_project "$_repo" || return 2
+  # The server clamps per_page to 100 whatever is asked, so PM_LIMIT above that
+  # silently dropped issue 101 onward -- the same trap provider_issues has a
+  # page loop for. Pages until PM_LIMIT or a short page says stop.
+  _limit=${PM_LIMIT:-100}
+  _page=1
+  jq -n '[]' > "$_tmp"
+  while :; do
+    _pg=$(mktemp)
+    _glab_read api "projects/$PM_PROJ/issues?labels=needs-human&state=opened&per_page=100&page=$_page" \
+      > "$_pg" || { rm -f "$_tmp" "$_pg" 2>/dev/null; return 2; }
+    _got=$(jq 'length' < "$_pg" 2>/dev/null) || { rm -f "$_tmp" "$_pg" 2>/dev/null; return 2; }
+    jq -s '.[0] + .[1]' "$_tmp" "$_pg" > "$_tmp.n" 2>/dev/null \
+      || { rm -f "$_tmp" "$_tmp.n" "$_pg" 2>/dev/null; return 2; }
+    mv "$_tmp.n" "$_tmp" || { rm -f "$_tmp" "$_tmp.n" "$_pg" 2>/dev/null; return 2; }
+    rm -f "$_pg" 2>/dev/null
+    [ "$_got" -lt 100 ] && break
+    [ "$(jq 'length' < "$_tmp" 2>/dev/null)" -ge "$_limit" ] && break
+    _page=$((_page + 1))
+  done
 
-  _ids=${TMPDIR:-/tmp}/pm-gitlab.$$.iids
+  _ids=$(mktemp)
   jq -r '.[].iid' < "$_tmp" > "$_ids" 2>/dev/null || {
     rm -f "$_tmp" "$_ids" 2>/dev/null; return 2; }
 
-  _out=${TMPDIR:-/tmp}/pm-gitlab.$$.nhout
+  _out=$(mktemp)
   jq -n '[]' > "$_out"
   # Read rather than `for _iid in $(...)`: an unquoted expansion splits on the
   # shell's IFS, which is not newline everywhere, and glob-expands besides.
   while IFS= read -r _iid; do
     [ -n "$_iid" ] || continue
-    _notes=${TMPDIR:-/tmp}/pm-gitlab.$$.notes
-    _glab_read api "projects/$_proj/issues/$_iid/notes?per_page=100" > "$_notes" || {
+    _notes=$(mktemp)
+    _glab_read api "projects/$PM_PROJ/issues/$_iid/notes?per_page=100" > "$_notes" || {
       rm -f "$_tmp" "$_out" "$_ids" "$_notes" 2>/dev/null; return 2; }
     jq --slurpfile notes "$_notes" --argjson iid "$_iid" --slurpfile issues "$_tmp" '
       . + [ ($issues[0][] | select(.iid == $iid)) as $i
@@ -282,10 +302,11 @@ provider_needs_human() {
                           | select((.system // false) | not)
                           | { author: { login: (.author.username // "") },
                               body: (.body // ""),
-                              createdAt: .created_at } ]
-                        | sort_by(.createdAt) } ]' < "$_out" > "$_out.n" 2>/dev/null || {
+                              createdAt: .created_at, id: .id } ]
+                        | sort_by(.createdAt, .id) } ]' < "$_out" > "$_out.n" 2>/dev/null || {
       rm -f "$_tmp" "$_out" "$_out.n" "$_ids" "$_notes" 2>/dev/null; return 2; }
-    mv "$_out.n" "$_out"
+    mv "$_out.n" "$_out" || {
+      rm -f "$_tmp" "$_out" "$_out.n" "$_ids" "$_notes" 2>/dev/null; return 2; }
     rm -f "$_notes" 2>/dev/null
   done < "$_ids"
   cat "$_out"
@@ -317,9 +338,9 @@ provider_needs_human() {
 # typo gets caught before a link is written.
 provider_issue_id() {
   _n=${1:?}; _repo=${2:-}
-  _proj=$(_glab_project "$_repo") || return 1
-  _tmp=${TMPDIR:-/tmp}/pm-gitlab.$$.id
-  _glab_read api "projects/$_proj/issues/$_n" > "$_tmp"
+  _glab_project "$_repo" || return 1
+  _tmp=$(mktemp)
+  _glab_read api "projects/$PM_PROJ/issues/$_n" > "$_tmp"
   _rc=$?
   [ "$_rc" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null; return "$_rc"; }
   jq -r '.iid // empty' < "$_tmp"
@@ -330,11 +351,24 @@ provider_issue_id() {
 
 # Only is_blocked_by is a blocker. relates_to and blocks are different claims,
 # and counting either would invent an ordering constraint nobody recorded.
+#
+# THE TWO SIDES REPORT DIFFERENT TYPES, which is the whole reason this filter
+# is right. Measured on a licensed instance, for "A is blocked by B":
+#
+#   GET /issues/A/links  ->  link_type=is_blocked_by, .iid = B   <- the blocker
+#   GET /issues/B/links  ->  link_type=blocks,        .iid = A
+#
+# So filtering is_blocked_by and reading .iid yields exactly the blockers, and
+# asking the blocker's side yields nothing, correctly.
+#
+# The POST response is a red herring: creating with link_type=is_blocked_by
+# returns link_type "blocks", because it describes the link from the far end.
+# Believing that response instead of re-reading would invert the graph.
 provider_blocked_by() {
   _n=${1:?}; _repo=${2:-}
-  _proj=$(_glab_project "$_repo") || return 1
-  _tmp=${TMPDIR:-/tmp}/pm-gitlab.$$.links
-  _glab_read api "projects/$_proj/issues/$_n/links" > "$_tmp"
+  _glab_project "$_repo" || return 1
+  _tmp=$(mktemp)
+  _glab_read api "projects/$PM_PROJ/issues/$_n/links" > "$_tmp"
   _rc=$?
   [ "$_rc" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null; return "$_rc"; }
   jq -r '.[] | select(.link_type == "is_blocked_by") | .iid' < "$_tmp"
@@ -349,10 +383,19 @@ provider_blocked_by() {
 # quietly downgraded to a relates_to edge that would misreport direction.
 provider_link() {
   _n=${1:?}; _blocker=${2:?}; _repo=${3:-}
-  _proj=$(_glab_project "$_repo") || return 1
-  _target=$(printf '%s' "$_proj" | sed 's|%2F|/|g')
-  _glab_write api --method POST "projects/$_proj/issues/$_n/links" \
-     -f target_project_id="$_target" -f target_issue_iid="$_blocker" \
+  _glab_project "$_repo" || return 1
+  _target=$(printf '%s' "$PM_PROJ" | sed 's|%2F|/|g')
+  # -F for the iid, -f for the rest. `glab api -f` sends a STRING and this
+  # endpoint declares target_issue_iid an Integer -- the shape that made every
+  # github link call 422 while every test passed.
+  #
+  # Measured against a licensed instance, GitLab accepts BOTH here: Grape
+  # coerces "3" to 3 and the link is created either way. So this is doctrine,
+  # not a live bug -- the typed flag says what is meant and does not depend on
+  # a coercion layer staying friendly. Recorded because the github comment
+  # reads as though the string form always fails, and here it does not.
+  _glab_write api --method POST "projects/$PM_PROJ/issues/$_n/links" \
+     -f target_project_id="$_target" -F target_issue_iid="$_blocker" \
      -f link_type=is_blocked_by
   [ -z "$PROVIDER_ERR" ]
 }
@@ -362,29 +405,43 @@ provider_link() {
 # success on some paths, which is why this is not left to the caller.
 provider_unlink() {
   _n=${1:?}; _blocker=${2:?}; _repo=${3:-}
-  _proj=$(_glab_project "$_repo") || return 1
-  _tmp=${TMPDIR:-/tmp}/pm-gitlab.$$.unlink
-  _glab_read api "projects/$_proj/issues/$_n/links" > "$_tmp" || {
+  _glab_project "$_repo" || return 1
+  _tmp=$(mktemp)
+  _glab_read api "projects/$PM_PROJ/issues/$_n/links" > "$_tmp" || {
     rm -f "$_tmp" 2>/dev/null; return 1; }
+  case "$_blocker" in
+    ''|*[!0-9]*) PROVIDER_ERR="blocker must be an issue number, got: $_blocker"; return 1 ;;
+  esac
   _lid=$(jq -r --argjson b "$_blocker" '
     .[] | select(.iid == $b and .link_type == "is_blocked_by") | .issue_link_id' \
     < "$_tmp" 2>/dev/null | head -1)
   rm -f "$_tmp" 2>/dev/null
   [ -n "$_lid" ] || { PROVIDER_ERR="no is_blocked_by link from #$_n to #$_blocker"; return 1; }
-  _glab_write api --method DELETE "projects/$_proj/issues/$_n/links/$_lid"
+  _glab_write api --method DELETE "projects/$PM_PROJ/issues/$_n/links/$_lid"
   [ -z "$PROVIDER_ERR" ]
 }
 
-# Probe, do not assume. The links endpoint is readable on every licence, so a
-# successful read means the graph can be QUERIED -- and where blocking links
-# cannot be created, blocked_by correctly returns nothing, because there are
-# none. An unreachable or unauthenticated backend degrades to "no dependency
-# graph" rather than failing the whole ordering, per the contract.
+# Probe the LINKS endpoint, which is the one being asked about. An earlier
+# version probed `issues?per_page=1` -- the only one of the three that is
+# readable anonymously -- so on an unauthenticated install it answered "there is
+# a dependency graph" while blocked_by could not read one. The comment claimed
+# the links endpoint; the code did not. Probing the endpoint you mean is the
+# whole point of a probe.
+#
+# The links endpoint needs an issue to hang off, so one is fetched first. No
+# open issues means nothing to query and the honest answer is "cannot tell":
+# degrade, and let the ordering drop the dependents term.
 #
 # PM_ASSUME_DEPS overrides, same as the github provider, for the case where the
 # probe costs a call nobody wants to spend.
 provider_supports_deps() {
   [ -n "${PM_ASSUME_DEPS:-}" ] && return "${PM_ASSUME_DEPS}"
-  _proj=$(_glab_project "${1:-}") || return 1
-  _glab_read api "projects/$_proj/issues?per_page=1" >/dev/null 2>&1
+  _glab_project "${1:-}" || return 1
+  _tmp=$(mktemp)
+  _glab_read api "projects/$PM_PROJ/issues?per_page=1&state=opened" > "$_tmp" || {
+    rm -f "$_tmp" 2>/dev/null; return 1; }
+  _iid=$(jq -r '.[0].iid // empty' < "$_tmp" 2>/dev/null)
+  rm -f "$_tmp" 2>/dev/null
+  [ -n "$_iid" ] || return 1
+  _glab_read api "projects/$PM_PROJ/issues/$_iid/links" >/dev/null 2>&1
 }
