@@ -96,17 +96,25 @@ fi
 # Splitting these across passes means re-deriving the label set five times, and
 # a label read five ways is five slightly different definitions.
 scan() {
+  _serr=${_serr:-$(mktemp)}
   printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson stale "$STALE" --arg mark "$AGENT_MARK" '
-    def lbl: [ .labels[]? | (if type == "object" then .name else . end) ];
+    def lbl: [ .labels[]? | (if type == "object" then .name else . end) | strings ];
     # GitLab stamps milliseconds ("...T10:12:28.895Z"), GitHub does not, and the
     # fromdateiso8601 builtin rejects the fractional part outright -- so every
     # ordering died on the second backend. Trimmed before parsing rather than
     # requiring each provider to round, which only moves the trap.
     # No apostrophes below: this jq program is inside a single-quoted shell
     # string, and one would end it.
-    def isodate: (. // "1970-01-01T00:00:00Z") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+    def isodate:
+    # Fractional seconds first (GitLab sends them, GitHub does not), then a
+    # zero offset, which GitLab webhooks write as +00:00 where its REST API
+    # writes Z. Returns null on anything else; callers substitute $now.
+    (. // "") | tostring
+    | sub("\\.[0-9]+"; "")
+    | sub("\\+00:?00$"; "Z")
+    | fromdateiso8601?;
     def has($l): lbl | index($l) != null;
-    def age: (.updatedAt // .createdAt | isodate? // 0) as $t | (($now - $t) / 3600);
+    def age: ((.updatedAt // .createdAt | isodate) // $now) as $t | (($now - $t) / 3600);
     # The last comment being agent-marked means the ball is still with the
     # human. This is the verdict check-replies computes; it is read the same way
     # here rather than invented a second time.
@@ -133,25 +141,36 @@ scan() {
                   and (((.parent // null) == null)))
            | "#\(.number)  finding with no parent issue  \(.title)"
       else empty end
-  ' --arg check "$1" 2>/dev/null
+  ' --arg check "$1" 2>"$_serr"
+  _rc=$?
+  # Not 2>/dev/null with the status dropped. Under set -eu a jq failure made
+  # OUT=$(scan ...) inherit jq's exit 5 -- a code this script never otherwise
+  # uses -- and die with stdout AND stderr empty, which reads as "triage found
+  # nothing" rather than "triage could not run".
+  if [ "$_rc" -ne 0 ]; then
+    echo "backlog-triage: could not scan the issue list ($1)" >&2
+    sed 's/^/  /' "$_serr" >&2
+    return 2
+  fi
 }
 
 if want stale; then
-  OUT=$(scan stale); [ -n "$OUT" ] && report "stale claims -- a branch nothing has touched for ${STALE}h" "$OUT"
+  OUT=$(scan stale) || exit 2
+  [ -n "$OUT" ] && report "stale claims -- a branch nothing has touched for ${STALE}h" "$OUT"
 fi
 if want axes; then
-  OUT=$(scan axes)
+  OUT=$(scan axes) || exit 2
   if [ -n "$OUT" ]; then
     n=$(printf '%s\n' "$OUT" | wc -l | tr -d ' ')
     report "unranked ($n) -- these tie on every key and fall through to issue number, which is arrival order" "$OUT"
   fi
 fi
 if want human; then
-  OUT=$(scan human-stuck)
+  OUT=$(scan human-stuck) || exit 2
   [ -n "$OUT" ] && report "answered but still blocked -- the label outlived the answer" "$OUT"
 fi
 if want orphans; then
-  OUT=$(scan orphans)
+  OUT=$(scan orphans) || exit 2
   [ -n "$OUT" ] && report "findings with no home -- these compete with real work for queue position" "$OUT"
 fi
 

@@ -35,6 +35,24 @@ if [ "\${FAKE_GLAB_FAIL:-0}" = "1" ]; then
   echo "glab fake: the backend exploded (HTTP 502)" >&2
   exit 1
 fi
+# Fail only the calls whose argv contains this, so a single endpoint can be
+# broken while the rest answer -- which is what a 401 on one scope looks like.
+if [ -n "\${FAKE_GLAB_FAIL_ON:-}" ]; then
+  case "\$*" in *"\$FAKE_GLAB_FAIL_ON"*)
+    echo "glab: 401 Unauthorized (HTTP 401)" >&2; exit 1 ;;
+  esac
+fi
+# Paging: page 1 returns 100 rows, page 2 a short page.
+if [ -n "\${FAKE_GLAB_PAGES:-}" ]; then
+  case "\$*" in
+    *"labels=needs-human"*)
+      case "\$*" in
+        *"page=1"*) jq -s '.[0][0] as \$r | [range(0;100) | \$r + {iid: (100 + .)}]' "$FIX/issues-needs-human-gitlab-shape.json" ;;
+        *) jq -s '.[0][0:1]' "$FIX/issues-needs-human-gitlab-shape.json" ;;
+      esac
+      exit 0 ;;
+  esac
+fi
 case "\$1" in
   mr)
     case "\$2" in
@@ -65,12 +83,22 @@ case "\$1" in
     case "\$_m:\$_p" in
       post:*/links*)   cat "$FIX/links-403-gitlab-shape.json"; echo "glab: Blocked issues not available for current license (HTTP 403)" >&2; exit 1 ;;
       delete:*/links/*) exit 0 ;;
-      view:*"/issues/1/notes"*) cat "$FIX/notes-answered-gitlab-shape.json" ;;
-      view:*"/issues/2/notes"*) cat "$FIX/notes-blocked-gitlab-shape.json" ;;
+      view:*notes*)
+        if [ -n "\${FAKE_GLAB_NOTES:-}" ]; then cat "\$FAKE_GLAB_NOTES"; exit 0; fi
+        case "\$_p" in
+          */issues/1/notes*) cat "$FIX/notes-answered-gitlab-shape.json" ;;
+          */issues/2/notes*) cat "$FIX/notes-blocked-gitlab-shape.json" ;;
+          *) cat "$FIX/notes-answered-gitlab-shape.json" ;;
+        esac ;;
       view:*/issues/5/links*) cat "$FIX/links-blocked-gitlab-shape.json" ;;
+      # Any other issue's notes -- the paging fixture uses iids 100..199, and
+      # without this they fell through to the single-issue arm, so the row
+      # count never grew and the PM_LIMIT cap test could not discriminate.
       view:*/issues/*/links*) cat "$FIX/links-gitlab-shape.json" ;;
-      view:*labels=needs-human*) cat "$FIX/issues-needs-human-gitlab-shape.json" ;;
-      view:*"/issues?"*)  cat "$FIX/issues-gitlab-shape.json" ;;
+      view:*labels=needs-human*)
+        if [ -n "\${FAKE_GLAB_ISSUES:-}" ]; then cat "\$FAKE_GLAB_ISSUES"; else cat "$FIX/issues-needs-human-gitlab-shape.json"; fi ;;
+      view:*"/issues?"*)
+        if [ -n "\${FAKE_GLAB_EMPTY:-}" ]; then echo '[]'; else cat "$FIX/issues-gitlab-shape.json"; fi ;;
       view:*/issues/*)  jq '.[0]' "$FIX/issues-needs-human-gitlab-shape.json" ;;
       *) echo "glab fake: no api fixture for \$_m \$_p" >&2; exit 1 ;;
     esac ;;
@@ -188,6 +216,116 @@ enc() { ( . "$LIB/provider-gitlab.sh"; _glab_project "$1" && printf '%s' "$PM_PR
 [ "$(enc group/sub/proj)" = "group%2Fsub%2Fproj" ] && ok "a subgroup path encodes EVERY slash" \
   || bad "subgroup encode" "$(enc group/sub/proj)"
 [ "$(enc a/b/c/d/e)" = "a%2Fb%2Fc%2Fd%2Fe" ] && ok "nesting is not capped" || bad "deep encode" "$(enc a/b/c/d/e)"
+
+# --- the fixes from the last round, each one revertible until now -----------
+# Eight fixes survived every mutation: they could be silently undone and the
+# suite stayed green. The H1 probe is the one that matters most -- it is the
+# regression this branch already paid to find once.
+
+# H1: the probe must hit the LINKS endpoint, not the issues list. An earlier
+# version probed `issues?per_page=1` -- the only one of the three readable
+# anonymously -- so it answered "there is a dependency graph" on an install
+# that could not read one.
+pg="$TMP/log/deps.log"
+( PATH="$TMP/bin:$PATH"; FAKE_GLAB_LOG="$pg"; export FAKE_GLAB_LOG
+  . "$LIB/provider-gitlab.sh"; provider_supports_deps owner/repo >/dev/null 2>&1 )
+case "$(cat "$pg" 2>/dev/null)" in
+  *links*) ok "supports_deps probes the links endpoint" ;;
+  *) bad "supports_deps probes links" "$(cat "$pg" 2>/dev/null | tr '\n' ' ')" ;;
+esac
+# And it must say no when links are unreadable while issues are fine -- exactly
+# the anonymous case.
+if ( PATH="$TMP/bin:$PATH"; FAKE_GLAB_FAIL_ON=links; export FAKE_GLAB_FAIL_ON
+     . "$LIB/provider-gitlab.sh"; provider_supports_deps owner/repo >/dev/null 2>&1 )
+then bad "supports_deps says yes when only links are unreadable"
+else ok "supports_deps says no when links are unreadable"; fi
+
+# The empty-project branch: no issues means nothing to hang a link off, so the
+# honest answer is "cannot tell", not "yes".
+if ( PATH="$TMP/bin:$PATH"; FAKE_GLAB_EMPTY=1; export FAKE_GLAB_EMPTY
+     . "$LIB/provider-gitlab.sh"; provider_supports_deps owner/repo >/dev/null 2>&1 )
+then bad "supports_deps says yes with no issues to probe"
+else ok "supports_deps degrades when there is no issue to probe"; fi
+
+# A 401 on the per-issue NOTES call became comments:[] -- which check-replies
+# prints as "no replies yet" for a question whose thread it could not read.
+# The list call was fixed for this; the notes call was not.
+nhrc=$( PATH="$TMP/bin:$PATH"; FAKE_GLAB_FAIL_ON=notes; export FAKE_GLAB_FAIL_ON
+        . "$LIB/provider-gitlab.sh"; provider_needs_human owner/repo >/dev/null 2>&1; echo $? )
+[ "$nhrc" = "2" ] && ok "a notes failure is 2, not an empty comment list" \
+  || bad "needs-human notes failure" "got $nhrc"
+
+# Paging: a full first page must be followed by a second call.
+ppg="$TMP/log/page.log"
+( PATH="$TMP/bin:$PATH"; FAKE_GLAB_PAGES=1; FAKE_GLAB_LOG="$ppg"; PM_LIMIT=200
+  export FAKE_GLAB_PAGES FAKE_GLAB_LOG PM_LIMIT
+  . "$LIB/provider-gitlab.sh"; provider_needs_human owner/repo >/dev/null 2>&1 )
+[ "$(grep -c 'page=2' "$ppg" 2>/dev/null)" -ge 1 ] && ok "needs-human pages past the first 100" \
+  || bad "needs-human paging" "no page=2 in the log"
+
+# PM_LIMIT is a CAP, not merely a stop-paging hint: this is the one function
+# that makes a call per row, so an overshoot costs a request each.
+n=$( PATH="$TMP/bin:$PATH"; FAKE_GLAB_PAGES=1; PM_LIMIT=5
+     export FAKE_GLAB_PAGES PM_LIMIT
+     . "$LIB/provider-gitlab.sh"; provider_needs_human owner/repo 2>/dev/null | jq 'length' )
+[ "${n:-0}" -le 5 ] && ok "PM_LIMIT caps the rows returned" || bad "PM_LIMIT cap" "got $n rows"
+
+# A non-numeric PM_LIMIT made the paging guard error rather than compare, which
+# left the loop spinning.
+if ( PATH="$TMP/bin:$PATH"; PM_LIMIT=abc; export PM_LIMIT
+     . "$LIB/provider-gitlab.sh"; provider_needs_human owner/repo >/dev/null 2>&1 )
+then bad "a non-numeric PM_LIMIT is rejected"; else ok "a non-numeric PM_LIMIT is rejected"; fi
+
+# M7: PROVIDER_ERR was set inside $( ), so callers printed a stale diagnostic
+# from an earlier call.
+perr=$( PATH="$TMP/empty"; . "$LIB/provider-gitlab.sh"
+        PROVIDER_ERR=STALE; provider_blocked_by 2 >/dev/null 2>&1; printf '%s' "$PROVIDER_ERR" )
+case "$perr" in
+  STALE) bad "the project-lookup diagnostic survives" "still STALE" ;;
+  "") bad "the project-lookup diagnostic survives" "empty" ;;
+  *) ok "the project-lookup diagnostic reaches the caller" ;;
+esac
+
+# THE TIE. sort_by(.createdAt) alone is stable, and GitLab returns notes
+# NEWEST FIRST -- so on a same-millisecond tie the OLDER note ended up last and
+# check-replies read the wrong speaker. Nothing in the captured fixtures ties,
+# so the fix was revertible until this fixture existed.
+jq -n '[{id: 20, system: false, created_at: "2026-01-02T00:00:00.000Z",
+         author: {username: "human"}, body: "HUMAN ANSWER"},
+        {id: 10, system: false, created_at: "2026-01-02T00:00:00.000Z",
+         author: {username: "agent"}, body: "🤖 agent asked"}]' > "$TMP/tie-notes.json"
+tie=$( PATH="$TMP/bin:$PATH"; FAKE_GLAB_NOTES="$TMP/tie-notes.json"; export FAKE_GLAB_NOTES
+       . "$LIB/provider-gitlab.sh"
+       provider_needs_human owner/repo 2>/dev/null | jq -r '.[0].comments | last | .body' )
+case "$tie" in
+  "HUMAN ANSWER") ok "a createdAt tie breaks on id, so the newer note is last" ;;
+  *) bad "createdAt tie-break" "last was: $tie" ;;
+esac
+
+# DUPLICATE IIDS. select() emits one object per MATCH, so a list carrying the
+# same iid twice multiplied the output instead of producing one row per issue.
+jq -s '.[0][0] as $r | [$r, $r]' "$FIX/issues-needs-human-gitlab-shape.json" > "$TMP/dup-issues.json"
+dup=$( PATH="$TMP/bin:$PATH"; FAKE_GLAB_ISSUES="$TMP/dup-issues.json"; export FAKE_GLAB_ISSUES
+       . "$LIB/provider-gitlab.sh"
+       provider_needs_human owner/repo 2>/dev/null | jq 'length' )
+[ "${dup:-0}" -le 2 ] && ok "a duplicate iid does not multiply the rows" \
+  || bad "duplicate iid multiplies rows" "got $dup rows from 2 issues"
+
+# unlink must reject a non-numeric blocker BEFORE the network read: --argjson
+# on a non-JSON value is a jq usage error, and 2>/dev/null turned that into
+# "there is no such link" -- the could-not-ask/there-is-nothing collapse the
+# contract forbids.
+ul="$TMP/log/unlink-bad.log"
+uerr=$( PATH="$TMP/bin:$PATH"; FAKE_GLAB_LOG="$ul"; export FAKE_GLAB_LOG
+        . "$LIB/provider-gitlab.sh"
+        provider_unlink 5 "not-a-number" owner/repo >/dev/null 2>&1
+        printf '%s' "$PROVIDER_ERR" )
+case "$uerr" in
+  *"must be an issue number"*) ok "unlink names a non-numeric blocker" ;;
+  *) bad "unlink rejects a non-numeric blocker" "ERR=[$uerr]" ;;
+esac
+[ ! -s "$ul" ] && ok "and rejects it without a network call" \
+  || bad "unlink called the backend before validating" "$(tr '\n' ' ' < "$ul")"
 
 # --- the dependency graph ----------------------------------------------------
 [ "$(run provider_issue_id 2 owner/repo)" = "2" ] && ok "issue_id is the iid, which links take" || bad "issue_id"

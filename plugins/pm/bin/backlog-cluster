@@ -91,7 +91,7 @@ PATH_RE="[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+|[A-Za-z0-9_-]+[.][A-Za-z]{1,4}"
 TAB=$(printf '\t')
 pairs() {
   printf '%s' "$JSON" | jq -r --arg re "$PATH_RE" --arg tab "$TAB" '
-    def lbl: [ .labels[]? | (if type == "object" then .name else . end) ];
+    def lbl: [ .labels[]? | (if type == "object" then .name else . end) | strings ];
     def keys_of: ( [ ((.title // "") + " " + (.body // "")) | [ scan($re) ] | .[] ]
                    + [ lbl[] | select(startswith("area-")) ] ) | unique;
     .[] | select((.state // "OPEN") | ascii_upcase == "OPEN")
@@ -102,7 +102,7 @@ pairs() {
 
 unkeyed() {
   printf '%s' "$JSON" | jq -r --arg re "$PATH_RE" '
-    def lbl: [ .labels[]? | (if type == "object" then .name else . end) ];
+    def lbl: [ .labels[]? | (if type == "object" then .name else . end) | strings ];
     def keys_of: ( [ ((.title // "") + " " + (.body // "")) | [ scan($re) ] | .[] ]
                    + [ lbl[] | select(startswith("area-")) ] ) | unique;
     .[] | select((.state // "OPEN") | ascii_upcase == "OPEN")

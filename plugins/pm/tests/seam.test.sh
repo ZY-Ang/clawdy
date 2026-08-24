@@ -169,49 +169,120 @@ for m in "$HERE"/../../*/.claude-plugin/plugin.json; do
 done
 
 # --- string labels: the shape the second backend actually sends ---------------
-# `(.name // .)` was written to accept both an object label and a bare string,
-# and does NOT: `//` catches null and false, while indexing a STRING with .name
-# is a hard jq error. Every binary that reads a label died on it, so the whole
-# toolset was inoperable against a backend that sends strings -- which is what
-# gitlab sends. Found by running the binaries against a live instance; no
-# fixture-driven test used a string label anywhere.
+# `(.name // .)` was written to accept an object label or a bare string, and
+# does NOT: `//` catches null and false, while indexing a STRING with .name is a
+# hard jq error. gh sends objects, glab sends strings, so every binary that read
+# a label died on the second backend.
+#
+# ASSERT POSITIVE OUTPUT, NOT THE ABSENCE OF AN ERROR. The first version of
+# these greps looked for "could not parse" -- but backlog-cluster says "could
+# not scan", and backlog-triage died with stdout AND stderr empty, so both
+# passed while completely broken. An empty output satisfies any "no error here"
+# test.
 LBLTMP=${TMPDIR:-/tmp}/seam-labels.$$
-mklbl() { printf '[{"number":1,"title":"t","state":"OPEN","labels":%s,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","comments":[],"blockedBy":[]}]\n' "$1" > "$LBLTMP"; }
+mklbl() { printf '[{"number":1,"title":"needle-title","state":"OPEN","labels":%s,"createdAt":"2026-08-20T00:00:00Z","updatedAt":"2026-08-20T00:00:00Z","comments":[],"blockedBy":[]}]\n' "$1" > "$LBLTMP"; }
+lblrun() { BACKLOG_ISSUES_JSON="$LBLTMP" BACKLOG_NOW=1787184000 sh "$BIN/$1" 2>&1; }
 
-mklbl '["task","priority-high","size-s","urgency-low"]'
-for b in backlog-queue backlog-cluster backlog-triage; do
-  out=$(BACKLOG_ISSUES_JSON="$LBLTMP" BACKLOG_NOW=1787184000 sh "$BIN/$b" 2>&1)
-  case "$out" in
-    *"Cannot index string"*|*"could not parse"*) bad "$b survives string labels" "$out" ;;
-    *) ok "$b survives string labels" ;;
-  esac
-done
-
-mklbl '[{"name":"task"},{"name":"priority-high"},{"name":"size-s"},{"name":"urgency-low"}]'
-out=$(BACKLOG_ISSUES_JSON="$LBLTMP" BACKLOG_NOW=1787184000 sh "$BIN/backlog-queue" 2>&1)
-case "$out" in
-  *"Cannot index"*|*"could not parse"*) bad "object labels still work" "$out" ;;
-  *) ok "object labels still work -- both shapes, per the contract" ;;
-esac
-rm -f "$LBLTMP" 2>/dev/null
-
-# --- fractional-second timestamps --------------------------------------------
-# jq's fromdateiso8601 rejects "...T10:12:28.895Z" outright. GitHub never sends
-# a fractional part; GitLab always does, so every ordering died on the second
-# backend with "does not match format". No fixture had one.
-TSTMP=${TMPDIR:-/tmp}/seam-ts.$$
-mkts() { printf '[{"number":1,"title":"t","state":"OPEN","labels":["task"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]}]\n' "$1" "$1" > "$TSTMP"; }
-for stamp in 2026-08-20T00:00:00.895Z 2026-08-20T00:00:00Z; do
-  for b in backlog-queue backlog-triage; do
-    mkts "$stamp"
-    out=$(BACKLOG_ISSUES_JSON="$TSTMP" BACKLOG_NOW=1787184000 sh "$BIN/$b" 2>&1)
-    case "$out" in
-      *"does not match format"*|*"could not parse"*) bad "$b parses $stamp" "$out" ;;
-      *) ok "$b parses $stamp" ;;
-    esac
+for shape in '["task","priority-high","size-s","urgency-low"]' '[{"name":"task"},{"name":"priority-high"},{"name":"size-s"},{"name":"urgency-low"}]'; do
+  case "$shape" in '["task"'*) kind=string ;; *) kind=object ;; esac
+  mklbl "$shape"
+  for b in backlog-queue backlog-cluster backlog-triage; do
+    out=$(lblrun "$b"); rc=$?
+    # The title must appear: the binary has to have READ the issue, not merely
+    # exited without complaining.
+    # cluster and triage legitimately print no title, so the discriminator is
+    # a sane exit AND some output: a broken idiom gives cluster exit 2, and
+    # triage exit 5 with stdout and stderr both empty.
+    if [ "$rc" -le 1 ] && [ -n "$out" ]
+    then ok "$b reads $kind labels"
+    else bad "$b reads $kind labels" "exit $rc: $(printf '%s' "$out" | head -2)"; fi
   done
 done
+
+# backlog-claim and backlog-release read ONE issue through a different seam, so
+# the loop above never reached them -- both label fixes were untested.
+ONETMP=${TMPDIR:-/tmp}/seam-one.$$
+for shape in '["task","claimed"]' '[{"name":"task"},{"name":"claimed"}]'; do
+  case "$shape" in '["task"'*) kind=string ;; *) kind=object ;; esac
+  printf '{"number":1,"title":"needle-title","state":"OPEN","labels":%s,"createdAt":"2026-08-20T00:00:00Z","updatedAt":"2026-08-20T00:00:00Z","comments":[],"blockedBy":[]}\n' "$shape" > "$ONETMP"
+  # --dry-run for claim; release has no such flag, so it is driven with --reason
+  # and asserted on the label read rather than the write. Getting the flags
+  # wrong is how the first version of this test never reached the label code at
+  # all -- "unknown option --dry-run" satisfied every assertion.
+  out=$(BACKLOG_ISSUE_JSON="$ONETMP" BACKLOG_NOW=1787184000 sh "$BIN/backlog-claim" 1 --dry-run 2>&1)
+  case "$out" in
+    *"Cannot index string"*|*"unknown option"*) bad "backlog-claim reads $kind labels" "$out" ;;
+    *) ok "backlog-claim reads $kind labels" ;;
+  esac
+  out=$(BACKLOG_ISSUE_JSON="$ONETMP" BACKLOG_NOW=1787184000 sh "$BIN/backlog-release" 1 --reason "seam test" 2>&1)
+  case "$out" in
+    *"Cannot index string"*|*"unknown option"*) bad "backlog-release reads $kind labels" "$out" ;;
+    *) ok "backlog-release reads $kind labels" ;;
+  esac
+done
+rm -f "$LBLTMP" "$ONETMP" 2>/dev/null
+
+# --- fractional-second timestamps --------------------------------------------
+# jq's fromdateiso8601 rejects "...T10:12:28.895Z". GitHub never sends a
+# fractional part; GitLab always does.
+#
+# The first version of this test could not see the triage half at all: its
+# `isodate? // 0` swallowed the error, so both stamps produced output either
+# way. What distinguishes them is the ANSWER -- an unparsed stamp fell back to
+# epoch 0, i.e. infinitely old, so a fresh claim was reported stale.
+TSTMP=${TMPDIR:-/tmp}/seam-ts.$$
+mkts() { printf '[{"number":1,"title":"needle-title","state":"OPEN","labels":["task","claimed"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]}]\n' "$1" "$1" > "$TSTMP"; }
+for stamp in 2026-08-20T00:00:00.895Z 2026-08-20T00:00:00Z 2026-08-20T00:00:00+00:00; do
+  mkts "$stamp"
+  out=$(BACKLOG_ISSUES_JSON="$TSTMP" BACKLOG_NOW=1787184000 sh "$BIN/backlog-queue" 2>&1); rc=$?
+  if [ "$rc" -le 1 ] && [ -n "$out" ] && ! printf '%s' "$out" | grep -q 'could not parse'
+  then ok "backlog-queue parses $stamp"
+  else bad "backlog-queue parses $stamp" "exit $rc: $(printf '%s' "$out" | head -1)"; fi
+
+  # An issue stamped one second before BACKLOG_NOW is not stale. Under a failed
+  # parse it dated to epoch 0 and triage reported it quiet for ~496440h.
+  mkts "$stamp"
+  out=$(BACKLOG_ISSUES_JSON="$TSTMP" BACKLOG_NOW=1787184060 STALE_HOURS=24 sh "$BIN/backlog-triage" 2>&1)
+  case "$out" in
+    *"stale claims"*) bad "backlog-triage dates $stamp correctly" "reported stale: $(printf '%s' "$out" | grep -o 'quiet for [0-9]*h' | head -1)" ;;
+    *) ok "backlog-triage dates $stamp correctly" ;;
+  esac
+done
 rm -f "$TSTMP" 2>/dev/null
+
+# THE DIRECTION OF THE FALLBACK. An unparseable stamp must mean "age unknown",
+# not "epoch 0". Falling back to 0 made a fresh claim report as quiet for
+# ~496440h -- a confident false positive, which is worse than silence.
+TSBAD=${TMPDIR:-/tmp}/seam-tsbad.$$
+for stamp in "2026-08-20T00:00:00+05:30" "not-a-date" ""; do
+  printf '[{"number":1,"title":"needle-title","state":"OPEN","labels":["task","claimed"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]}]\n' "$stamp" "$stamp" > "$TSBAD"
+  out=$(BACKLOG_ISSUES_JSON="$TSBAD" BACKLOG_NOW=1787184060 STALE_HOURS=24 sh "$BIN/backlog-triage" 2>&1)
+  case "$out" in
+    *"stale claims"*) bad "an unparsed stamp is not infinitely old [$stamp]" "$(printf '%s' "$out" | grep -o 'quiet for [0-9]*h' | head -1)" ;;
+    *) ok "an unparsed stamp is not infinitely old [$stamp]" ;;
+  esac
+done
+rm -f "$TSBAD" 2>/dev/null
+
+# A +00:00 offset must date the SAME as its Z form. Checking only that the
+# queue printed something cannot see this: an unparsed stamp falls back to
+# $now, so the queue still runs and merely dates the issue wrongly. Ageing is
+# what exposes it -- an old low-priority issue escalates above a fresh
+# medium-priority one, and a stamp read as "now" does not.
+OFFTMP=${TMPDIR:-/tmp}/seam-off.$$
+offfirst() {
+  printf '[{"number":1,"title":"aged-low","state":"OPEN","labels":["task","priority-low","size-s","urgency-low"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]},{"number":2,"title":"fresh-med","state":"OPEN","labels":["task","priority-med","size-s","urgency-low"],"createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:00:00Z","comments":[],"blockedBy":[]}]\n' "$1" "$1" > "$OFFTMP"
+  BACKLOG_ISSUES_JSON="$OFFTMP" BACKLOG_NOW=1787184000 ESCALATE_DAYS=30 sh "$BIN/backlog-queue" 2>&1 | head -1
+}
+z=$(offfirst "2020-01-01T00:00:00Z")
+off=$(offfirst "2020-01-01T00:00:00+00:00")
+now=$(offfirst "2026-08-19T00:00:00Z")
+case "$z" in *aged-low*) ok "an old Z stamp escalates above a fresher higher priority" ;;
+  *) bad "Z ageing" "$z" ;; esac
+if [ "$off" = "$z" ] && [ "$off" != "$now" ]
+then ok "+00:00 dates the same as Z, and not as now"
+else bad "+00:00 dates the same as Z" "offset=[$off] z=[$z] now=[$now]"; fi
+rm -f "$OFFTMP" 2>/dev/null
 
 # --- every binary must parse as sh --------------------------------------------
 # These scripts embed long jq programs inside SINGLE-quoted strings, so one

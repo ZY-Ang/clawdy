@@ -92,14 +92,21 @@ fi
 # surgery. Numbers are inverted and zero-padded so a plain lexicographic `sort`
 # reproduces the order -- no numeric sort flags, which differ across platforms.
 RANKED=$(printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson esc "$ESC" '
-  def lbl: [ .labels[]? | (if type == "object" then .name else . end) ];
+  def lbl: [ .labels[]? | (if type == "object" then .name else . end) | strings ];
   # GitLab stamps milliseconds ("...T10:12:28.895Z"), GitHub does not, and the
   # fromdateiso8601 builtin rejects the fractional part outright -- so every
   # ordering died on the second backend. Trimmed before parsing rather than
   # requiring each provider to round, which only moves the trap.
   # No apostrophes below: this jq program is inside a single-quoted shell
   # string, and one would end it.
-  def isodate: (. // "1970-01-01T00:00:00Z") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+  def isodate:
+  # Fractional seconds first (GitLab sends them, GitHub does not), then a
+  # zero offset, which GitLab webhooks write as +00:00 where its REST API
+  # writes Z. Returns null on anything else; callers substitute $now.
+  (. // "") | tostring
+  | sub("\\.[0-9]+"; "")
+  | sub("\\+00:?00$"; "Z")
+  | fromdateiso8601?;
   # gh returns blockedBy as an OBJECT wrapping the list -- {"nodes":[],"totalCount":0}
   # -- not as a plain array. Iterating the object handed the inner array to
   # .number and jq aborted on every issue, so the queue exited 2 against any real
@@ -165,7 +172,7 @@ RANKED=$(printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson esc "$ESC" '
       # a priority-high issue silently ranked as medium, with "priority=2(base 3)"
       # the only sign, and nothing anywhere calling it an error. Ageing is only
       # ever meant to promote.
-      | ([0, ((($now - ($i.createdAt | isodate)) / 86400) | floor)] | max) as $age
+      | ([0, ((($now - (($i.createdAt | isodate) // $now)) / 86400) | floor)] | max) as $age
       | ([3, ($base + (($age / $esc) | floor))] | min) as $eff
       | ([ $edges[] | select(.blocks | index($i.number)) ] | length) as $dep
       # A human has answered when the LAST comment is not agent-marked -- the

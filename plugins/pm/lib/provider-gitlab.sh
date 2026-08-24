@@ -259,12 +259,17 @@ provider_find_pr() {
 # The author key is `username`; the contract's consumer reads `.author.login`.
 provider_needs_human() {
   _repo=${1:-}
-  _tmp=$(mktemp)
   _glab_project "$_repo" || return 2
+  _tmp=$(mktemp)
   # The server clamps per_page to 100 whatever is asked, so PM_LIMIT above that
   # silently dropped issue 101 onward -- the same trap provider_issues has a
   # page loop for. Pages until PM_LIMIT or a short page says stop.
   _limit=${PM_LIMIT:-100}
+  # Validated like STALE_HOURS is: `[ -ge ]` on a non-number ERRORS rather than
+  # comparing, which leaves the paging guard inoperative and the loop spinning.
+  case "$_limit" in
+    ''|*[!0-9]*) PROVIDER_ERR="PM_LIMIT must be a whole number, got: $_limit"; return 2 ;;
+  esac
   _page=1
   jq -n '[]' > "$_tmp"
   while :; do
@@ -280,36 +285,46 @@ provider_needs_human() {
     [ "$(jq 'length' < "$_tmp" 2>/dev/null)" -ge "$_limit" ] && break
     _page=$((_page + 1))
   done
+  # Cap, do not merely stop paging: PM_LIMIT=150 returned 200 issues, and this
+  # is the one function that makes a call per row, so the overshoot was 50
+  # extra HTTP requests.
+  jq --argjson n "$_limit" '.[0:$n]' < "$_tmp" > "$_tmp.c" 2>/dev/null \
+    && mv "$_tmp.c" "$_tmp"
 
   _ids=$(mktemp)
   jq -r '.[].iid' < "$_tmp" > "$_ids" 2>/dev/null || {
     rm -f "$_tmp" "$_ids" 2>/dev/null; return 2; }
 
+  # One object per line, slurped once at the end. The first version re-read and
+  # rewrote the whole accumulated array per issue, which is O(n^2) in both jq
+  # invocations and bytes -- 100 issues took long enough to look like a hang.
   _out=$(mktemp)
-  jq -n '[]' > "$_out"
-  # Read rather than `for _iid in $(...)`: an unquoted expansion splits on the
-  # shell's IFS, which is not newline everywhere, and glob-expands besides.
+  : > "$_out"
   while IFS= read -r _iid; do
     [ -n "$_iid" ] || continue
     _notes=$(mktemp)
+    # A failure here is "could not ask", never "nobody replied": an empty
+    # comments array makes check-replies print "no replies yet" for a question
+    # whose whole thread it could not read.
     _glab_read api "projects/$PM_PROJ/issues/$_iid/notes?per_page=100" > "$_notes" || {
       rm -f "$_tmp" "$_out" "$_ids" "$_notes" 2>/dev/null; return 2; }
-    jq --slurpfile notes "$_notes" --argjson iid "$_iid" --slurpfile issues "$_tmp" '
-      . + [ ($issues[0][] | select(.iid == $iid)) as $i
-          | { number: $i.iid,
-              title: ($i.title // ""),
-              comments: [ $notes[0][]
-                          | select((.system // false) | not)
-                          | { author: { login: (.author.username // "") },
-                              body: (.body // ""),
-                              createdAt: .created_at, id: .id } ]
-                        | sort_by(.createdAt, .id) } ]' < "$_out" > "$_out.n" 2>/dev/null || {
-      rm -f "$_tmp" "$_out" "$_out.n" "$_ids" "$_notes" 2>/dev/null; return 2; }
-    mv "$_out.n" "$_out" || {
-      rm -f "$_tmp" "$_out" "$_out.n" "$_ids" "$_notes" 2>/dev/null; return 2; }
+    jq -c --slurpfile notes "$_notes" --argjson iid "$_iid" '
+      # first(): one row per iid. select() emits one object per MATCH, so a
+      # list carrying a duplicate iid multiplied the output instead of
+      # producing one entry per issue.
+      first(.[] | select(.iid == $iid)) as $i
+      | { number: $i.iid,
+          title: ($i.title // ""),
+          comments: [ $notes[0][]
+                      | select((.system // false) | not)
+                      | { author: { login: (.author.username // "") },
+                          body: (.body // ""),
+                          createdAt: .created_at, id: .id } ]
+                    | sort_by(.createdAt, .id) }' < "$_tmp" >> "$_out" 2>/dev/null || {
+      rm -f "$_tmp" "$_out" "$_ids" "$_notes" 2>/dev/null; return 2; }
     rm -f "$_notes" 2>/dev/null
   done < "$_ids"
-  cat "$_out"
+  jq -s '.' < "$_out"
   rm -f "$_tmp" "$_out" "$_ids" 2>/dev/null
 }
 
@@ -405,13 +420,16 @@ provider_link() {
 # success on some paths, which is why this is not left to the caller.
 provider_unlink() {
   _n=${1:?}; _blocker=${2:?}; _repo=${3:-}
+  # Before the read, not after: an argument that was always going to be
+  # rejected must not cost a network round trip, and returning here must not
+  # leave a temp file behind.
+  case "$_blocker" in
+    ''|*[!0-9]*) PROVIDER_ERR="blocker must be an issue number, got: $_blocker"; return 1 ;;
+  esac
   _glab_project "$_repo" || return 1
   _tmp=$(mktemp)
   _glab_read api "projects/$PM_PROJ/issues/$_n/links" > "$_tmp" || {
     rm -f "$_tmp" 2>/dev/null; return 1; }
-  case "$_blocker" in
-    ''|*[!0-9]*) PROVIDER_ERR="blocker must be an issue number, got: $_blocker"; return 1 ;;
-  esac
   _lid=$(jq -r --argjson b "$_blocker" '
     .[] | select(.iid == $b and .link_type == "is_blocked_by") | .issue_link_id' \
     < "$_tmp" 2>/dev/null | head -1)

@@ -296,7 +296,7 @@ provider_is_triaged() {
   _issue=${1:?}
   command -v jq >/dev/null 2>&1 || return 2
   printf '%s' "$_issue" | jq -e '
-    [ .labels[]? | (if type == "object" then .name else . end) ] as $l
+    [ .labels[]? | (if type == "object" then .name else . end) | strings ] as $l
     | ($l | any(startswith("priority-")))
       and ($l | any(startswith("urgency-")))
       and ($l | any(startswith("size-")))
