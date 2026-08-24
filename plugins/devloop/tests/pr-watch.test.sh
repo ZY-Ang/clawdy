@@ -227,7 +227,6 @@ else fails=$((fails + 1)); printf 'FAIL %-22s exit %s: %s\n' provider-is-a-dir "
 # A bare name is resolved on PATH: rejecting it would contradict the exec that
 # follows, which would have found it.
 ran=$((ran + 1))
-cp "$TMP/prov" "$TMP/bin-prov" 2>/dev/null || mkprov clean-approved
 mkprov clean-approved; cp "$TMP/prov" "$TMP/onpath"
 out=$(PATH="$TMP:$PATH" PR_WATCH_PROVIDER=onpath sh "$BIN" 2>&1); rc=$?
 if [ "$rc" -eq 0 ]; then printf 'ok   %-22s resolved on PATH\n' provider-bare-name
@@ -369,6 +368,71 @@ h=$(sh "$BIN" --help 2>&1)
 if printf '%s' "$h" | grep -q PR_WATCH_PROVIDER && printf '%s' "$h" | grep -q 'wait <id>'
 then printf 'ok   %-22s names the provider verbs\n' help-covers-provider
 else fails=$((fails + 1)); printf 'FAIL %-22s help was truncated\n' help-covers-provider; fi
+
+# --- the cap, and the value class that motivated it ---------------------------
+# Past intmax `[ -gt ]` ERRORS rather than answering false, the AND-list fails,
+# and execution carries on -- so the enormous value sailed through the check
+# written to stop it, and --wait became a silent no-op on a pending PR.
+ran=$((ran + 1))
+mkprov clean-approved
+out=$(PR_WATCH_TIMEOUT=99999999999999999999 PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" 42 --wait 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && printf '%s' "$out" | grep -q 'larger than a week' \
+   && ! printf '%s' "$out" | grep -qi 'illegal number'
+then printf 'ok   %-22s exit 2, no [ error\n' timeout-past-intmax
+else fails=$((fails + 1)); printf 'FAIL %-22s exit %s: %s\n' timeout-past-intmax "$rc" "$out"; fi
+
+ran=$((ran + 1))
+PR_WATCH_TIMEOUT=604801 PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" 42 >/dev/null 2>&1
+if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2\n' timeout-over-a-week
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' timeout-over-a-week; fi
+ran=$((ran + 1))
+PR_WATCH_TIMEOUT=604800 PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" 42 >/dev/null 2>&1
+if [ $? -eq 0 ]; then printf 'ok   %-22s accepted\n' timeout-exactly-a-week
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' timeout-exactly-a-week; fi
+
+# --- provider stdout is not a trusted list of ids -----------------------------
+# gh's --json number could only emit digits. A provider's stdout cannot, and an
+# unquoted `for n in $nums` glob-expands: a list printing `*` produced one
+# verdict block per file in the working directory.
+ran=$((ran + 1))
+cat > "$TMP/globprov" <<GLOB
+#!/bin/sh
+case "\$1" in list) printf '*\\n' ;; view) cat "$TMP/clean-approved.json" ;; *) exit 2 ;; esac
+GLOB
+chmod +x "$TMP/globprov"
+out=$(cd "$TMP" && PR_WATCH_PROVIDER="$TMP/globprov" sh "$BIN" --all 2>&1); rc=$?
+if [ "$rc" -eq 2 ] && [ "$(printf '%s' "$out" | grep -c 'state OPEN')" -eq 0 ]
+then printf 'ok   %-22s exit 2, nothing iterated\n' list-glob-rejected
+else fails=$((fails + 1)); printf 'FAIL %-22s exit %s, %s blocks\n' list-glob-rejected "$rc" "$(printf '%s' "$out" | grep -c 'state OPEN')"; fi
+
+# The same defect wearing different clothes: an error message printed to stdout
+# instead of stderr must not be read as a pull request id.
+ran=$((ran + 1))
+cat > "$TMP/errprov" <<ERRP
+#!/bin/sh
+case "\$1" in list) echo "error: token expired" ;; *) exit 2 ;; esac
+ERRP
+chmod +x "$TMP/errprov"
+PR_WATCH_PROVIDER="$TMP/errprov" sh "$BIN" --all >/dev/null 2>&1
+if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2\n' list-prose-rejected
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' list-prose-rejected; fi
+
+# --- a provider that reads stdin must not hang the run ------------------------
+# The probe passes a deliberately bogus verb, which is exactly what reaches a
+# CLI's "did you mean...? [y/N]". An unattended loop's stdin is open and never
+# delivers, so one prompt there hangs forever.
+ran=$((ran + 1))
+cat > "$TMP/stdinprov" <<STDIN
+#!/bin/sh
+case "\$1" in list) exit 0 ;; view) cat "$TMP/clean-approved.json" ;; *) read x; exit 0 ;; esac
+STDIN
+chmod +x "$TMP/stdinprov"
+mkfifo "$TMP/fifo" 2>/dev/null || :
+( sleep 20 > "$TMP/fifo" & ) 2>/dev/null
+timeout 5 sh -c "PR_WATCH_PROVIDER='$TMP/stdinprov' sh '$BIN' --all" < "$TMP/fifo" >/dev/null 2>&1
+rc=$?
+if [ "$rc" -ne 124 ]; then printf 'ok   %-22s did not hang (exit %s)\n' provider-reads-stdin "$rc"
+else fails=$((fails + 1)); printf 'FAIL %-22s hung until killed\n' provider-reads-stdin; fi
 
 # --- argument handling ------------------------------------------------------
 ran=$((ran + 1))

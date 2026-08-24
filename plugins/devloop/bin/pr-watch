@@ -52,6 +52,12 @@
 # one shape where a broken provider can be mistaken for good news, and the
 # empty-list branch probes for it rather than trusting the rule.
 #
+# THREE FIELDS ARE SILENTLY GREEN WHEN ABSENT, and that is the shape a
+# half-written provider takes: no statusCheckRollup reads as "no checks", no
+# isDraft as false, and no reviewDecision turns READY FOR REVIEW into READY TO
+# MERGE. A view returning only number/title/state/mergeable/mergeStateStatus
+# reports READY TO MERGE, exit 0. Emit all of them, empty rather than absent.
+#
 # DERIVING mergeStateStatus. Not every host has one field for it, and BEHIND in
 # particular usually has none -- there is no "the base moved under this branch"
 # flag to read. Derive it by comparing the recorded base sha against the target
@@ -96,6 +102,14 @@ if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
     # Digits alone are not enough: a value near the integer ceiling wraps the
     # deadline negative and the wait returns instantly, which is the same
     # silent no-op the validation exists to prevent. A week is already absurd.
+    #
+    # LENGTH FIRST. Past intmax, `[ -gt ]` ERRORS rather than answering false --
+    # the AND-list then fails, execution carries on, and the enormous value
+    # sails through the check written to stop it. Seven digits already exceeds
+    # a week, so no legitimate value reaches the numeric compare.
+    case "$_val" in
+      ???????*) echo "pr-watch: $_var is larger than a week ($_val); refusing"; exit 2 ;;
+    esac
     [ -n "$_val" ] && [ "$_val" -gt 604800 ] && {
       echo "pr-watch: $_var is larger than a week ($_val); refusing"; exit 2; }
   done
@@ -110,7 +124,10 @@ fi
 fetch() {
   if [ -n "${PR_WATCH_JSON:-}" ]; then cat "$PR_WATCH_JSON"; return 0; fi
   if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
-    if [ -n "$1" ]; then "$PR_WATCH_PROVIDER" view "$1"; else "$PR_WATCH_PROVIDER" view; fi
+    # stdin closed on every provider call: an unattended loop's stdin is open
+    # and never delivers, and one prompt there hangs the whole run forever.
+    if [ -n "$1" ]; then "$PR_WATCH_PROVIDER" view "$1" </dev/null
+    else "$PR_WATCH_PROVIDER" view </dev/null; fi
     return $?
   fi
   if [ -n "$1" ]; then gh pr view "$1" --json "$FIELDS" 2>/dev/null
@@ -255,7 +272,7 @@ if [ "$ALL" -eq 1 ]; then
     # while the data came from a file.
     nums=$(jq -r '.number // 1' "$PR_WATCH_JSON" 2>/dev/null)
   elif [ -n "${PR_WATCH_PROVIDER:-}" ]; then
-    nums=$("$PR_WATCH_PROVIDER" list 2>/dev/null)
+    nums=$("$PR_WATCH_PROVIDER" list 2>/dev/null </dev/null)
   else
     nums=$(gh pr list --author "@me" --state open --json number -q '.[].number' 2>/dev/null)
   fi || { echo "pr-watch: could not list pull requests"; exit 2; }
@@ -264,7 +281,7 @@ if [ "$ALL" -eq 1 ]; then
   # tells them apart: a conforming provider fails an unknown verb.
   if [ -z "$nums" ]; then
     if [ -n "${PR_WATCH_PROVIDER:-}" ] && [ -z "${PR_WATCH_JSON:-}" ] \
-       && "$PR_WATCH_PROVIDER" __pr_watch_probe__ >/dev/null 2>&1; then
+       && "$PR_WATCH_PROVIDER" __pr_watch_probe__ >/dev/null 2>&1 </dev/null; then
       echo "pr-watch: provider returned no pull requests, and exits 0 for an"
       echo "          unknown verb — so an empty list cannot be believed."
       exit 2
@@ -272,7 +289,17 @@ if [ "$ALL" -eq 1 ]; then
     echo "No open pull requests."; exit 0
   fi
   rc=0
-  for n in $nums; do
+  # Read line by line and require digits. Unquoted `for n in $nums` splits on
+  # whatever IFS holds and GLOB-EXPANDS: a list printing `*` produced one
+  # verdict block per file in the working directory. gh's --json number could
+  # only ever emit digits; a provider's stdout is not that guarantee.
+  # grep -qv, not -q: the question is whether ANY line is not an id, not
+  # whether some line is one.
+  if printf '%s\n' "$nums" | grep -qvE '^[0-9]*$'; then
+    echo "pr-watch: provider list returned something that is not a pull request id"
+    exit 2
+  fi
+  for n in $(printf '%s\n' "$nums" | grep -E '^[0-9]+$'); do
     j=$(fetch "$n") || j=""
     if [ -z "$j" ]; then
       echo "#$n — could not read"; rc=2; echo; continue
@@ -289,8 +316,8 @@ if [ "$WAIT" -eq 1 ] && [ -z "${PR_WATCH_JSON:-}" ]; then
   if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
     # Any failure means the wait did not happen, whatever the reason, so poll.
     wrc=0
-    if [ -n "$PR" ]; then "$PR_WATCH_PROVIDER" wait "$PR" >/dev/null 2>&1 || wrc=$?
-    else "$PR_WATCH_PROVIDER" wait >/dev/null 2>&1 || wrc=$?; fi
+    if [ -n "$PR" ]; then "$PR_WATCH_PROVIDER" wait "$PR" >/dev/null 2>&1 </dev/null || wrc=$?
+    else "$PR_WATCH_PROVIDER" wait >/dev/null 2>&1 </dev/null || wrc=$?; fi
     [ "$wrc" -ne 0 ] && settle "$PR"
   # gh already implements the waiting. Its exit status is informational here --
   # the verdict below decides, not this call.
