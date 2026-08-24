@@ -18,8 +18,16 @@
 #   [text](url)     a markdown link already carries its URL; its text is not a
 #                   bare citation
 #   `code`          quoting a reference is not citing one -- inline and fenced
-#   https://...     a ref already written as a URL is not a bare one, and a URL
-#                   path is shaped exactly like a project path (see below)
+#   scheme://...    a ref already written as a URL is not a bare one, and a URL
+#                   path is shaped exactly like a project path (see below).
+#                   ANY scheme, not just http -- ftp:// and git+ssh:// carry the
+#                   same path shape, and would otherwise be read as project refs.
+#
+#                   The strip STOPS at ,;()<>"`* -- a URL is routinely followed
+#                   by punctuation and then a real ref, and eating to the next
+#                   space swallowed it. "…/pull/12,#64" must still block #64.
+#                   A "#" with no separator before it is a fragment and goes
+#                   with the URL; one after punctuation is a citation.
 #
 # Fences are stripped only when they pair up. An odd fence is a typo, and
 # treating everything after it as code is how one stray backtick-triple hid
@@ -98,7 +106,7 @@ TEXT=$(printf '%s' "$LAST" \
       }' \
   | sed 's/\[[^]]*\]([^)]*)//g' \
   | sed 's/`[^`]*`//g; s/`[^`]*//g' \
-  | sed 's|https\{0,1\}://[^[:space:]]*||g')
+  | sed 's|[A-Za-z][A-Za-z0-9+.-]*://[^[:space:],;()<>"`*]*||g')
 
 # Bare refs: #N or !N. The class before the marker excludes alphanumerics
 # (glued refs like PR#63), "/" (a # in a URL path), and the two markers
@@ -107,7 +115,9 @@ BARE=$(printf '%s' "$TEXT" | grep -oE '(^|[^0-9A-Za-z/!#])[#!][0-9]+' | sed 's/^
 
 # Path-prefixed refs: two or more slash-joined segments glued to the marker.
 # Reported whole -- "group/project!123" says more to a reader than "!123".
-PATHED=$(printf '%s' "$TEXT" | grep -oE '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]+)+[#!][0-9]+')
+# The last segment may be empty, so a trailing slash ("group/project/#123")
+# does not let the ref through -- it sits between both patterns otherwise.
+PATHED=$(printf '%s' "$TEXT" | grep -oE '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]*)+[#!][0-9]+')
 
 REFS=$(printf '%s\n%s\n' "$BARE" "$PATHED" | grep -v '^[[:space:]]*$' \
   | sort -u | tr '\n' ' ' | sed 's/ *$//')
