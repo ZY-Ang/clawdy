@@ -17,7 +17,32 @@
 # The point is that "ready for review" is a claim. This checks it. BEHIND and
 # UNSTABLE both look like success if you only glance at whether CI ran.
 #
-# Requires: gh (authenticated) and jq.
+# ANOTHER HOST. The gate logic below is host-agnostic once the data arrives in
+# the right shape -- so point pr-watch at your own review infrastructure rather
+# than forking it:
+#
+#   PR_WATCH_PROVIDER=/path/to/my-provider  pr-watch 14
+#
+# The provider is any executable answering three verbs:
+#
+#   view [<id>]   one pull request as JSON, on stdout. No id means "the one for
+#                 the current branch". The shape is FIELDS below.
+#   list          the ids of your open pull requests, one per line. --all only.
+#   wait <id>     OPTIONAL: block until checks settle. EXIT 3 means "I do not
+#                 implement this", and pr-watch polls view instead -- so --wait
+#                 works on every backend, not only the ones that wrote a waiter.
+#
+# Any other non-zero exit is "could not tell", and becomes exit 2 here. That
+# matters more than it looks: a provider that fails quietly and prints nothing
+# must never be read as a clean pull request.
+#
+# DERIVING mergeStateStatus. Not every host has one field for it, and BEHIND in
+# particular usually has none -- there is no "the base moved under this branch"
+# flag to read. Derive it by comparing the recorded base sha against the target
+# branch's current tip. A provider that omits BEHIND reports a stale CLEAN, and
+# a verdict goes stale the moment the base moves.
+#
+# Requires: jq, plus gh (authenticated) unless PR_WATCH_PROVIDER is set.
 
 set -eu
 
@@ -35,17 +60,41 @@ for a in "$@"; do
 done
 
 command -v jq >/dev/null || { echo "pr-watch: jq is not installed"; exit 2; }
-# The seam below stands in for gh, so only demand gh when we will really call it.
-if [ -z "${PR_WATCH_JSON:-}" ]; then
+# Both seams below stand in for gh, so only demand gh when we will really call it.
+if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
+  [ -x "$PR_WATCH_PROVIDER" ] || {
+    echo "pr-watch: PR_WATCH_PROVIDER is not an executable: $PR_WATCH_PROVIDER"; exit 2; }
+elif [ -z "${PR_WATCH_JSON:-}" ]; then
   command -v gh >/dev/null || { echo "pr-watch: gh is not installed"; exit 2; }
 fi
 
 # Test seam: PR_WATCH_JSON names a file of gh-shaped JSON, so the gate logic can
-# be exercised without gh, without auth and without the network.
+# be exercised without gh, without auth and without the network. It wins over a
+# provider, so setting PR_WATCH_PROVIDER in a shell cannot silently rewrite what
+# the fixtures assert.
 fetch() {
   if [ -n "${PR_WATCH_JSON:-}" ]; then cat "$PR_WATCH_JSON"; return 0; fi
+  if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
+    if [ -n "$1" ]; then "$PR_WATCH_PROVIDER" view "$1"; else "$PR_WATCH_PROVIDER" view; fi
+    return $?
+  fi
   if [ -n "$1" ]; then gh pr view "$1" --json "$FIELDS" 2>/dev/null
   else gh pr view --json "$FIELDS" 2>/dev/null; fi
+}
+
+# Poll view until no check is still running, for providers that do not implement
+# wait. Field 8 of the summary is the pending count; @tsv escapes any tab in the
+# title, so the field positions hold.
+settle() {
+  _deadline=$(( $(date +%s) + ${PR_WATCH_TIMEOUT:-1800} ))
+  while :; do
+    _j=$(fetch "$1") || return 0
+    [ -n "$_j" ] || return 0
+    _p=$(printf '%s' "$_j" | jq -r "$SUMMARY_JQ" 2>/dev/null | cut -f8) || return 0
+    [ "${_p:-0}" -eq 0 ] && return 0
+    [ "$(date +%s)" -ge "$_deadline" ] && return 0
+    sleep "${PR_WATCH_INTERVAL:-30}"
+  done
 }
 
 # statusCheckRollup mixes two shapes: CheckRun (.status/.conclusion) and
@@ -153,8 +202,11 @@ verdict() {
 }
 
 if [ "$ALL" -eq 1 ]; then
-  nums=$(gh pr list --author "@me" --state open --json number -q '.[].number' 2>/dev/null) || {
-    echo "pr-watch: could not list pull requests"; exit 2; }
+  if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
+    nums=$("$PR_WATCH_PROVIDER" list 2>/dev/null)
+  else
+    nums=$(gh pr list --author "@me" --state open --json number -q '.[].number' 2>/dev/null)
+  fi || { echo "pr-watch: could not list pull requests"; exit 2; }
   [ -n "$nums" ] || { echo "No open pull requests."; exit 0; }
   rc=0
   for n in $nums; do
@@ -171,9 +223,16 @@ if [ "$ALL" -eq 1 ]; then
 fi
 
 if [ "$WAIT" -eq 1 ] && [ -z "${PR_WATCH_JSON:-}" ]; then
+  if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
+    # Exit 3 is the provider saying it has no waiter, and only that -- any other
+    # failure is left alone for the verdict below to report.
+    wrc=0
+    if [ -n "$PR" ]; then "$PR_WATCH_PROVIDER" wait "$PR" >/dev/null 2>&1 || wrc=$?
+    else "$PR_WATCH_PROVIDER" wait >/dev/null 2>&1 || wrc=$?; fi
+    [ "$wrc" -eq 3 ] && settle "$PR"
   # gh already implements the waiting. Its exit status is informational here --
   # the verdict below decides, not this call.
-  if [ -n "$PR" ]; then gh pr checks "$PR" --watch >/dev/null 2>&1 || true
+  elif [ -n "$PR" ]; then gh pr checks "$PR" --watch >/dev/null 2>&1 || true
   else gh pr checks --watch >/dev/null 2>&1 || true; fi
 fi
 

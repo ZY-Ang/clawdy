@@ -33,6 +33,41 @@ pass. Exit `0` prints which of two situations you are in:
 - **READY FOR REVIEW** — everything you control is green; the only thing left is a human.
   This is the one moment asking for review is correct.
 
+### On a host that is not GitHub
+
+The verdict logic is host-agnostic; only the fetch is not. Point `pr-watch` at your own
+review infrastructure rather than forking it:
+
+```bash
+PR_WATCH_PROVIDER=/path/to/my-provider  pr-watch 14
+```
+
+The provider is any executable answering three verbs:
+
+| Verb | Returns |
+| --- | --- |
+| `view [<id>]` | one pull request as JSON, on stdout. No id means the current branch |
+| `list` | ids of your open pull requests, one per line. `--all` only |
+| `wait <id>` | **optional**: block until checks settle. Exit `3` means "not implemented", and `pr-watch` polls `view` instead |
+
+Any other non-zero exit is "could not tell" and becomes exit `2`. A provider that fails
+quietly must never read as a clean pull request.
+
+The JSON shape is the `FIELDS` list in `bin/pr-watch`. Two things to get right:
+
+- **`BEHIND` usually has to be derived, not read.** Most hosts have no single field saying
+  the base moved under this branch — compare the recorded base sha against the target
+  branch's current tip. A provider that omits it reports a stale `CLEAN`, and a verdict goes
+  stale the moment the base moves.
+- **Polling knobs** for the `wait` fallback: `PR_WATCH_INTERVAL` (default 30s) and
+  `PR_WATCH_TIMEOUT` (default 1800s).
+
+This deliberately differs from how `pm` handles backends. `pm` *ships* its providers, because
+its backends are a small set of public trackers. Review infrastructure is not: it is usually
+one organisation's private host, cannot be contributed upstream, and should not have to be.
+So the provider lives entirely outside this repo, and `pr-watch` keeps sole ownership of the
+part worth sharing — the gate.
+
 Run it before you type the words, not after. Under the hood it is the check below.
 
 ```bash
