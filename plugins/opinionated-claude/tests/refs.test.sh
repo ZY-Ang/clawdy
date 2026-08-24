@@ -194,29 +194,24 @@ blocks "a prose number is still blocked" "We're #1 in the standings."
 printf '%s' "Filed #64 and #65." | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
 if printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | CLAUDE_REFERENCE_LINKS=1 sh "$HOOK" >/dev/null 2>&1
 then ok "CLAUDE_REFERENCE_LINKS=1 stands down -- the terminal renders them clickable"
-else fails=$((fails+1)); printf 'FAIL reference-links escape\n'; fi
-ran=$((ran+1))
+else bad "reference-links escape"; fi
 
 # --- safety rails, same as the siblings -----------------------------------------
 printf '%s' "Filed #64." | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
 if printf '{"transcript_path":"%s","stop_hook_active":true}' "$TMP/t.jsonl" | sh "$HOOK" >/dev/null 2>&1
 then ok "stop_hook_active stops it re-blocking"
-else fails=$((fails+1)); printf 'FAIL stop_hook_active\n'; fi
-ran=$((ran+1))
+else bad "stop_hook_active"; fi
 
 if printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | CLAUDE_ALLOW_ASKING=1 sh "$HOOK" >/dev/null 2>&1
 then ok "CLAUDE_ALLOW_ASKING=1 overrides, same switch as the siblings"
-else fails=$((fails+1)); printf 'FAIL escape hatch\n'; fi
-ran=$((ran+1))
+else bad "escape hatch"; fi
 
 if printf '{"transcript_path":"/nope/missing.jsonl"}' | sh "$HOOK" >/dev/null 2>&1
 then ok "a missing transcript stands down"
-else fails=$((fails+1)); printf 'FAIL missing transcript\n'; fi
-ran=$((ran+1))
+else bad "missing transcript"; fi
 
 if printf '' | sh "$HOOK" >/dev/null 2>&1
-then ok "empty input stands down"; else fails=$((fails+1)); printf 'FAIL empty input\n'; fi
-ran=$((ran+1))
+then ok "empty input stands down"; else bad "empty input"; fi
 
 # --- the message has to say what to do instead --------------------------------
 printf '%s' "Filed #64 and #65." | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
