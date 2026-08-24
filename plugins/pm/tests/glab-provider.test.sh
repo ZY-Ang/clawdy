@@ -54,6 +54,25 @@ case "\$1" in
       note|update|close) exit 0 ;;
     esac ;;
   label) exit 0 ;;
+  repo) cat "$FIX/repo-gitlab-shape.json" ;;
+  api)
+    # The REST half. Dispatch on the method and the path, the way the real
+    # endpoint does -- the provider builds these URLs itself, so a typo in one
+    # has to show up here as "no fixture" rather than as a silent empty answer.
+    _m=view
+    case "\$*" in *"--method POST"*) _m=post ;; *"--method DELETE"*) _m=delete ;; esac
+    for a in "\$@"; do case "\$a" in projects/*) _p=\$a ;; esac; done
+    case "\$_m:\$_p" in
+      post:*/links*)   cat "$FIX/links-403-gitlab-shape.json"; echo "glab: Blocked issues not available for current license (HTTP 403)" >&2; exit 1 ;;
+      delete:*/links/*) exit 0 ;;
+      view:*"/issues/1/notes"*) cat "$FIX/notes-answered-gitlab-shape.json" ;;
+      view:*"/issues/2/notes"*) cat "$FIX/notes-blocked-gitlab-shape.json" ;;
+      view:*/issues/*/links*) cat "$FIX/links-gitlab-shape.json" ;;
+      view:*labels=needs-human*) cat "$FIX/issues-needs-human-gitlab-shape.json" ;;
+      view:*"/issues?"*)  cat "$FIX/issues-gitlab-shape.json" ;;
+      view:*/issues/*)  jq '.[0]' "$FIX/issues-needs-human-gitlab-shape.json" ;;
+      *) echo "glab fake: no api fixture for \$_m \$_p" >&2; exit 1 ;;
+    esac ;;
   *) echo "glab fake: no fixture for \$*" >&2; exit 1 ;;
 esac
 EOF
@@ -106,14 +125,67 @@ case "$(printf '%s' "$one" | jq -r '.body')" in
 esac
 
 # --- provider_needs_human: an honest cannot-tell until the write half --------
-# Reading notes takes the notes endpoint, which requires an authenticated read
-# token even on public projects -- a 401, not an empty list, is what a caller
-# would get. Exit 2 is the contract's "could not tell", and check-replies
-# maps that to its own exit 2 rather than pretending nobody replied.
-nh=$(run provider_needs_human owner/repo 2>&1)
-rc=$?
-[ "$rc" -eq 2 ] && ok "needs-human exits 2: cannot tell" || bad "needs-human exit 2" "got $rc"
-case "$nh" in *"not implemented"*) ok "and says it is not implemented" ;; *) bad "names the gap" "$nh" ;; esac
+# --- needs-human: the whole answered-question loop turns on this -------------
+nh=$(run provider_needs_human owner/repo)
+[ $? -eq 0 ] && ok "needs-human exits 0 with a token" || bad "needs-human exit 0" "$nh"
+[ "$(printf '%s' "$nh" | jq -r 'length')" = "2" ] && ok "both labelled issues come back" \
+  || bad "two needs-human issues" "$(printf '%s' "$nh" | jq -r 'length')"
+
+k=$(printf '%s' "$nh" | jq -r '.[0] | keys | sort | join(",")')
+[ "$k" = "comments,number,title" ] && ok "the contract keys, nothing else" || bad "contract keys" "got: $k"
+ck=$(printf '%s' "$nh" | jq -r '.[0].comments[0] | keys | sort | join(",")')
+case "$ck" in *author*body*) ok "comments carry author and body" ;; *) bad "comment keys" "got: $ck" ;; esac
+# check-replies reads .author.login; GitLab's key is username. A provider that
+# passed the wire shape through would give every comment a null author.
+[ "$(printf '%s' "$nh" | jq -r '.[0].comments[0].author.login')" = "ZY-Ang" ] \
+  && ok "username is mapped to author.login" || bad "author.login mapping"
+
+# SYSTEM NOTES. GitLab puts "changed title from", "marked as related to" in the
+# same stream as human comments. check-replies asks whether the LAST comment
+# carries the agent mark -- so a system note after an agent reply reads as a
+# human answering, and a question still blocked gets reported ANSWERED. The
+# fixture has two of them, recorded after the agent's reply, deliberately.
+sys=$(printf '%s' "$nh" | jq -r '[ .[].comments[] | select(.body | test("changed title|marked as related")) ] | length')
+[ "$sys" = "0" ] && ok "system notes are excluded" || bad "system notes leaked" "$sys of them"
+blocked=$(printf '%s' "$nh" | jq -r '.[] | select(.number == 2) | .comments | length')
+[ "$blocked" = "2" ] && ok "only the two human-written notes survive" || bad "note count" "got $blocked"
+
+# ORDER IS THE ANSWER. Last comment marked -> still on the human; unmarked ->
+# answered. Both directions are pinned, because a reversed sort reports every
+# question as the opposite of what it is and still looks like it works.
+last2=$(printf '%s' "$nh" | jq -r '.[] | select(.number == 2) | .comments | last | .body')
+case "$last2" in "🤖"*) ok "issue 2: agent spoke last, still blocked" ;; *) bad "issue 2 last comment" "$last2" ;; esac
+last1=$(printf '%s' "$nh" | jq -r '.[] | select(.number == 1) | .comments | last | .body')
+case "$last1" in "🤖"*) bad "issue 1 last comment" "$last1" ;; *) ok "issue 1: human spoke last, answered" ;; esac
+
+# --- the dependency graph ----------------------------------------------------
+[ "$(run provider_issue_id 2 owner/repo)" = "2" ] && ok "issue_id is the iid, which links take" || bad "issue_id"
+
+# The fixture holds a relates_to edge -- the only kind gitlab.com free can
+# create. relates_to is symmetric and carries no direction, so counting it as a
+# blocker would invent an ordering constraint nobody recorded.
+bb=$(run provider_blocked_by 2 owner/repo)
+[ -z "$bb" ] && ok "relates_to is not a blocker" || bad "relates_to counted as a blocker" "$bb"
+
+# A licence without blocking links fails LOUDLY, carrying GitLab's own words.
+# Silently degrading to relates_to would record the wrong claim.
+lk=$( PATH="$TMP/bin:$PATH"; . "$LIB/provider-gitlab.sh"; provider_link 2 3 owner/repo >/dev/null 2>&1; printf '%s' "$PROVIDER_ERR" )
+case "$lk" in *"not available for current license"*) ok "link failure carries the licence message" ;; *) bad "link error" "$lk" ;; esac
+if ( PATH="$TMP/bin:$PATH"; . "$LIB/provider-gitlab.sh"; provider_link 2 3 owner/repo >/dev/null 2>&1 )
+then bad "link reports success on a 403"; else ok "link reports failure on a 403"; fi
+
+# unlink needs the LINK's id, not either issue's. Passing an issue number there
+# deletes nothing; the lookup is the function's job, not the caller's.
+if ( PATH="$TMP/bin:$PATH"; . "$LIB/provider-gitlab.sh"; provider_unlink 2 99 owner/repo >/dev/null 2>&1 )
+then bad "unlink claims success for an edge that is not there"
+else ok "unlink fails when no is_blocked_by edge exists"; fi
+
+# Degrade, do not fail: an unreachable backend means "no dependency graph", so
+# the queue drops the dependents term instead of erroring.
+if ( PATH="$TMP/bin:$PATH"; FAKE_GLAB_FAIL=1; export FAKE_GLAB_FAIL; . "$LIB/provider-gitlab.sh"; provider_supports_deps owner/repo )
+then bad "supports_deps says yes with a dead backend"; else ok "supports_deps degrades when the backend is dead"; fi
+if ( PATH="$TMP/bin:$PATH"; PM_ASSUME_DEPS=1; export PM_ASSUME_DEPS; . "$LIB/provider-gitlab.sh"; provider_supports_deps owner/repo )
+then bad "PM_ASSUME_DEPS ignored"; else ok "PM_ASSUME_DEPS overrides the probe"; fi
 
 # --- paging: glab returns page one, thirty rows, silently ---------------------
 out=$(FAKE_GLAB_PAGE=1 run provider_issues owner/repo)

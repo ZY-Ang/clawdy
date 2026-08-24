@@ -37,7 +37,7 @@ are needed by the tools that use them; implement what you use.
 | `provider_available` | `0` if reachable now | everything |
 | `provider_issues <repo>` | open issues, JSON array | `backlog-queue` `backlog-cluster` |
 | `provider_issue <n> <repo>` | one issue, JSON | `backlog-claim` `backlog-release` |
-| `provider_needs_human <repo>` | blocked issues + comments, JSON | `check-replies` |
+| `provider_needs_human <repo>` | blocked issues + comments, **oldest first** | `check-replies` |
 | `provider_create_issue <repo> <title> [label…]` | URL; **body on stdin** | `file-issue` `ask-async` |
 | `provider_comment <n> <body> <repo>` | — | `reply-issue` `backlog-*` |
 | `provider_label <n> <label> add\|remove <repo>` | — | `reply-issue` `backlog-*` |
@@ -64,6 +64,13 @@ are needed by the tools that use them; implement what you use.
 test for missing keys grows a branch per backend, which is the coupling the seam exists
 to prevent.
 
+**Comment order is part of the shape, and `check-replies` turns on it.** It reads the LAST
+comment and asks whether it carries the agent mark; reversed, every question is reported as
+the opposite of its real state and still looks like it works. A backend that mixes its own
+activity records into the comment stream must strip them — GitLab files "changed title
+from" and "marked as related to" as notes alongside human ones, so an untouched stream
+reports a question as answered by whatever the tracker last did to it.
+
 `blockedBy` accepts a bare integer **or** an object carrying `number`. Both, because
 `gh` returns different shapes from different subcommands — and because this repo's own
 queue was broken on its own documented form for two releases (#33, #41).
@@ -77,6 +84,25 @@ after a pipe `$?` is the last stage's, and POSIX `sh` has no `PIPESTATUS` (#39).
 **Degrade, do not fail.** `provider_supports_deps` is the pattern: probe once, and if the
 backend has no dependency graph, produce an order without the dependents term rather than
 an error.
+
+**A capability can be licensed, not just absent.** GitLab's blocking issue links are a paid
+feature. Measured against a real project on gitlab.com free:
+
+| `link_type` | result |
+| --- | --- |
+| `is_blocked_by` | `403 Blocked issues not available for current license` |
+| `blocks` | `403`, the same |
+| `relates_to` | `201`, a symmetric "related" edge |
+
+So the same backend has a dependency graph on one instance and none on another, and a
+provider must neither assume nor hardcode either — the Enterprise instances people run at
+work have it, gitlab.com free does not.
+
+**Never substitute a weaker edge for the one asked for.** `relates_to` is symmetric and
+carries no direction: recording a blocker as "related" would let the queue read a
+bidirectional edge as an ordering constraint and produce a confidently wrong order. No
+dependency graph beats a graph that lies about direction. The 403 is passed to the caller
+in `PROVIDER_ERR` instead, in GitLab's own words.
 
 **Never discard the backend's diagnostic.** Put it in `PROVIDER_ERR` and let the caller
 print it. `_gh_write` and `_gh_read` do this. Three different failures once printed the
