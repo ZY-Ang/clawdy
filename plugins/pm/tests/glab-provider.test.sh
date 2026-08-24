@@ -308,8 +308,32 @@ jq -s '.[0][0] as $r | [$r, $r]' "$FIX/issues-needs-human-gitlab-shape.json" > "
 dup=$( PATH="$TMP/bin:$PATH"; FAKE_GLAB_ISSUES="$TMP/dup-issues.json"; export FAKE_GLAB_ISSUES
        . "$LIB/provider-gitlab.sh"
        provider_needs_human owner/repo 2>/dev/null | jq 'length' )
-[ "${dup:-0}" -le 2 ] && ok "a duplicate iid does not multiply the rows" \
-  || bad "duplicate iid multiplies rows" "got $dup rows from 2 issues"
+[ "${dup:-0}" -eq 1 ] && ok "a duplicate iid yields exactly one row" \
+  || bad "duplicate iid rows" "got $dup from a 2-entry list of the same iid"
+
+# set -u is what check-replies runs, and the provider is sourced into it. A
+# cleanup naming a variable assigned later is an abrupt exit with a raw shell
+# error there, not the contract's 2 -- and it takes the temp files with it.
+urc=$( PATH="$TMP/bin:$PATH"
+       sh -c 'set -u; . "$1"; provider_needs_human owner/repo >/dev/null 2>&1; echo "rc=$?"' _ "$LIB/provider-gitlab.sh" 2>/dev/null )
+case "$urc" in
+  rc=*) ok "needs-human survives set -u and returns a code" ;;
+  *) bad "needs-human under set -u" "exited abruptly: [$urc]" ;;
+esac
+
+# Nothing asserted on leftovers, so every leak fix was unguarded.
+LEAKD=$(mktemp -d)
+( PATH="$TMP/bin:$PATH"; TMPDIR="$LEAKD"; export TMPDIR
+  . "$LIB/provider-gitlab.sh"
+  provider_needs_human owner/repo >/dev/null 2>&1
+  PM_LIMIT=abc provider_needs_human owner/repo >/dev/null 2>&1
+  PM_LIMIT=0 provider_needs_human owner/repo >/dev/null 2>&1
+  provider_unlink 5 "not-a-number" owner/repo >/dev/null 2>&1
+  provider_blocked_by 2 owner/repo >/dev/null 2>&1 ) || :
+left=$(find "$LEAKD" -type f 2>/dev/null | wc -l)
+[ "$left" -eq 0 ] && ok "no temp file survives any needs-human or unlink path" \
+  || bad "temp files leaked" "$left left in TMPDIR"
+rm -rf "$LEAKD" 2>/dev/null
 
 # unlink must reject a non-numeric blocker BEFORE the network read: --argjson
 # on a non-JSON value is a jq usage error, and 2>/dev/null turned that into

@@ -292,11 +292,14 @@ provider_needs_human() {
   # Cap, do not merely stop paging: PM_LIMIT=150 returned 200 issues, and this
   # is the one function that makes a call per row, so the overshoot was 50
   # extra HTTP requests.
+  # _ids is created BEFORE the cleanup below can name it. It used to be assigned
+  # two lines lower, so that `rm -f "$_ids"` expanded an unset variable -- fatal
+  # under `set -u`, which check-replies runs, turning the contract's 2 into an
+  # abrupt exit with a raw shell error and both temp files left behind.
+  _ids=$(mktemp)
   jq --argjson n "$_limit" '.[0:$n]' < "$_tmp" > "$_tmp.c" 2>/dev/null \
     && mv "$_tmp.c" "$_tmp" || {
     rm -f "$_tmp" "$_tmp.c" "$_ids" 2>/dev/null; return 2; }
-
-  _ids=$(mktemp)
   # Deduped: a list repeating an iid produced one row and one notes call per
   # copy, which is the redundant request the PM_LIMIT cap exists to avoid.
   jq -r '[.[].iid] | unique_by(.) | .[]' < "$_tmp" > "$_ids" 2>/dev/null || {
