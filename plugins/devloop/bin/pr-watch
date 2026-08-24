@@ -17,7 +17,59 @@
 # The point is that "ready for review" is a claim. This checks it. BEHIND and
 # UNSTABLE both look like success if you only glance at whether CI ran.
 #
-# Requires: gh (authenticated) and jq.
+# ANOTHER HOST. The gate logic below is host-agnostic once the data arrives in
+# the right shape -- so point pr-watch at your own review infrastructure rather
+# than forking it:
+#
+#   PR_WATCH_PROVIDER=/path/to/my-provider  pr-watch 14
+#
+# The provider is any executable answering three verbs:
+#
+#   view [<id>]   one pull request as JSON, on stdout. No id means "the one for
+#                 the current branch". The shape is FIELDS below.
+#   list          the ids of your open pull requests, one per line. --all only.
+#   wait <id>     OPTIONAL: block until checks settle. ANY non-zero exit -- the
+#                 verb unimplemented, the waiter broken, auth expired -- means
+#                 pr-watch polls view instead, so --wait works on every backend
+#                 rather than only the ones that wrote a waiter.
+#
+#                 There is deliberately no "not implemented" code. An earlier
+#                 draft reserved exit 3 for it, which collided with the rule
+#                 below: a provider that did as it was told and answered every
+#                 unknown verb with a non-zero default got a SILENTLY no-op
+#                 --wait, and the loop span calling it forever. Polling on any
+#                 failure has no such seam -- a waiter that failed has proved
+#                 nothing about the checks either way, and if the backend is
+#                 really down, view fails too and the poll gives up in three.
+#
+# STDIN IS CLOSED on every provider call. None of the verbs takes input -- they
+# take arguments -- and an unattended loop's stdin is open and never delivers,
+# so a prompt anywhere in the chain hangs the run forever. A provider that
+# shells out to something expecting a passphrase gets EOF, not a prompt.
+#
+# A view that exits non-zero, or exits 0 printing nothing, is "could not tell"
+# and becomes exit 2. A provider that fails quietly must never be read as a
+# clean pull request.
+#
+# MUST exit non-zero for a verb it does not recognise. A `case` with no default
+# arm exits 0 silently, and for `list` that is indistinguishable from "no open
+# pull requests" -- which pr-watch reports as exit 0, a clean sweep. That is the
+# one shape where a broken provider can be mistaken for good news, and the
+# empty-list branch probes for it rather than trusting the rule.
+#
+# THREE FIELDS ARE SILENTLY GREEN WHEN ABSENT, and that is the shape a
+# half-written provider takes: no statusCheckRollup reads as "no checks", no
+# isDraft as false, and no reviewDecision turns READY FOR REVIEW into READY TO
+# MERGE. A view returning only number/title/state/mergeable/mergeStateStatus
+# reports READY TO MERGE, exit 0. Emit all of them, empty rather than absent.
+#
+# DERIVING mergeStateStatus. Not every host has one field for it, and BEHIND in
+# particular usually has none -- there is no "the base moved under this branch"
+# flag to read. Derive it by comparing the recorded base sha against the target
+# branch's current tip. A provider that omits BEHIND reports a stale CLEAN, and
+# a verdict goes stale the moment the base moves.
+#
+# Requires: jq, plus gh (authenticated) unless PR_WATCH_PROVIDER is set.
 
 set -eu
 
@@ -28,24 +80,92 @@ for a in "$@"; do
   case "$a" in
     --wait) WAIT=1 ;;
     --all)  ALL=1 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^# Requires:/p' "$0"; exit 0 ;;
     -*) echo "pr-watch: unknown option $a" >&2; exit 2 ;;
     *) PR=$a ;;
   esac
 done
 
 command -v jq >/dev/null || { echo "pr-watch: jq is not installed"; exit 2; }
-# The seam below stands in for gh, so only demand gh when we will really call it.
-if [ -z "${PR_WATCH_JSON:-}" ]; then
+# Both seams below stand in for gh, so only demand gh when we will really call it.
+if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
+  # -x alone is true for a directory, which then fails at exec with a message
+  # naming neither the variable nor the cause. A bare name is resolved on PATH,
+  # because "$PR_WATCH_PROVIDER" view would have resolved it and rejecting it
+  # here contradicts the call that follows.
+  case "$PR_WATCH_PROVIDER" in
+    */*) [ -f "$PR_WATCH_PROVIDER" ] && [ -x "$PR_WATCH_PROVIDER" ] ;;
+    *)   command -v "$PR_WATCH_PROVIDER" >/dev/null 2>&1 ;;
+  esac || {
+    echo "pr-watch: PR_WATCH_PROVIDER is not an executable file: $PR_WATCH_PROVIDER"; exit 2; }
+  for _var in PR_WATCH_INTERVAL PR_WATCH_TIMEOUT; do
+    eval "_val=\${$_var:-}"
+    case "$_val" in
+      ''|*[!0-9]*) [ -z "$_val" ] || {
+        echo "pr-watch: $_var must be a whole number of seconds, got: $_val"; exit 2; } ;;
+    esac
+    # Digits alone are not enough: a value near the integer ceiling wraps the
+    # deadline negative and the wait returns instantly, which is the same
+    # silent no-op the validation exists to prevent. A week is already absurd.
+    #
+    # LENGTH FIRST. Past intmax, `[ -gt ]` ERRORS rather than answering false --
+    # the AND-list then fails, execution carries on, and the enormous value
+    # sails through the check written to stop it. The cut is 19 digits, not
+    # seven: 18 is the widest [ -gt ] compares safely, and a shorter cut called
+    # 0000001 "larger than a week", which is untrue.
+    case "$_val" in
+      ???????????????????*)
+        echo "pr-watch: $_var is too large to compare ($_val); refusing"; exit 2 ;;
+    esac
+    [ -n "$_val" ] && [ "$_val" -gt 604800 ] && {
+      echo "pr-watch: $_var is larger than a week ($_val); refusing"; exit 2; }
+  done
+elif [ -z "${PR_WATCH_JSON:-}" ]; then
   command -v gh >/dev/null || { echo "pr-watch: gh is not installed"; exit 2; }
 fi
 
 # Test seam: PR_WATCH_JSON names a file of gh-shaped JSON, so the gate logic can
-# be exercised without gh, without auth and without the network.
+# be exercised without gh, without auth and without the network. It wins over a
+# provider, so setting PR_WATCH_PROVIDER in a shell cannot silently rewrite what
+# the fixtures assert.
 fetch() {
   if [ -n "${PR_WATCH_JSON:-}" ]; then cat "$PR_WATCH_JSON"; return 0; fi
+  if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
+    # stdin closed on every provider call: an unattended loop's stdin is open
+    # and never delivers, and one prompt there hangs the whole run forever.
+    if [ -n "$1" ]; then "$PR_WATCH_PROVIDER" view "$1" </dev/null
+    else "$PR_WATCH_PROVIDER" view </dev/null; fi
+    return $?
+  fi
   if [ -n "$1" ]; then gh pr view "$1" --json "$FIELDS" 2>/dev/null
   else gh pr view --json "$FIELDS" 2>/dev/null; fi
+}
+
+# Poll view until no check is still running, for providers that do not implement
+# wait. Field 8 of the summary is the pending count; @tsv escapes any tab in the
+# title, so the field positions hold.
+#
+# A single failed poll is a hiccup, not an answer -- gh pr checks --watch retries
+# and so does this. Three consecutive failures give up and let the verdict report
+# whatever it can. The interval has a floor of 1s: 0 spins the provider several
+# hundred times a second, which against a real host is a denial of service you
+# aimed at yourself.
+settle() {
+  _deadline=$(( $(date +%s) + ${PR_WATCH_TIMEOUT:-1800} ))
+  _iv=${PR_WATCH_INTERVAL:-30}; [ "$_iv" -lt 1 ] && _iv=1
+  _miss=0
+  while :; do
+    _j=$(fetch "$1") || _j=""
+    _p=""
+    [ -n "$_j" ] && _p=$(printf '%s' "$_j" | jq -r "$SUMMARY_JQ" 2>/dev/null | cut -f8 | head -1)
+    case "$_p" in
+      ''|*[!0-9]*) _miss=$((_miss + 1)); [ "$_miss" -ge 3 ] && return 0 ;;
+      0) return 0 ;;
+      *) _miss=0 ;;
+    esac
+    [ "$(date +%s)" -ge "$_deadline" ] && return 0
+    sleep "$_iv"
+  done
 }
 
 # statusCheckRollup mixes two shapes: CheckRun (.status/.conclusion) and
@@ -153,11 +273,41 @@ verdict() {
 }
 
 if [ "$ALL" -eq 1 ]; then
-  nums=$(gh pr list --author "@me" --state open --json number -q '.[].number' 2>/dev/null) || {
-    echo "pr-watch: could not list pull requests"; exit 2; }
-  [ -n "$nums" ] || { echo "No open pull requests."; exit 0; }
+  if [ -n "${PR_WATCH_JSON:-}" ]; then
+    # The fixture describes one pull request, so that is what --all iterates.
+    # Calling the provider's list here would take the count from a live host
+    # while the data came from a file.
+    nums=$(jq -r '.number // 1' "$PR_WATCH_JSON" 2>/dev/null)
+  elif [ -n "${PR_WATCH_PROVIDER:-}" ]; then
+    nums=$("$PR_WATCH_PROVIDER" list 2>/dev/null </dev/null)
+  else
+    nums=$(gh pr list --author "@me" --state open --json number -q '.[].number' 2>/dev/null)
+  fi || { echo "pr-watch: could not list pull requests"; exit 2; }
+  # An empty list is genuinely the same as "no open pull requests" -- but so is
+  # a provider whose `case` has no default arm. One exec on an already-idle path
+  # tells them apart: a conforming provider fails an unknown verb.
+  if [ -z "$nums" ]; then
+    if [ -n "${PR_WATCH_PROVIDER:-}" ] && [ -z "${PR_WATCH_JSON:-}" ] \
+       && "$PR_WATCH_PROVIDER" __pr_watch_probe__ >/dev/null 2>&1 </dev/null; then
+      echo "pr-watch: provider returned no pull requests, and exits 0 for an"
+      echo "          unknown verb — so an empty list cannot be believed."
+      exit 2
+    fi
+    echo "No open pull requests."; exit 0
+  fi
   rc=0
-  for n in $nums; do
+  # Read line by line and require digits. Unquoted `for n in $nums` splits on
+  # whatever IFS holds and GLOB-EXPANDS: a list printing `*` produced one
+  # verdict block per file in the working directory. gh's --json number could
+  # only ever emit digits; a provider's stdout is not that guarantee.
+  # grep -qv, not -q: the question is whether ANY line is not an id, not
+  # whether some line is one.
+  if printf '%s\n' "$nums" | grep -qvE '^[0-9]*$'; then
+    echo "pr-watch: provider list must print ids as digits, one per line."
+    echo "          first offending line: $(printf '%s\n' "$nums" | grep -vE '^[0-9]*$' | head -1)"
+    exit 2
+  fi
+  for n in $(printf '%s\n' "$nums" | grep -E '^[0-9]+$'); do
     j=$(fetch "$n") || j=""
     if [ -z "$j" ]; then
       echo "#$n — could not read"; rc=2; echo; continue
@@ -171,9 +321,15 @@ if [ "$ALL" -eq 1 ]; then
 fi
 
 if [ "$WAIT" -eq 1 ] && [ -z "${PR_WATCH_JSON:-}" ]; then
+  if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
+    # Any failure means the wait did not happen, whatever the reason, so poll.
+    wrc=0
+    if [ -n "$PR" ]; then "$PR_WATCH_PROVIDER" wait "$PR" >/dev/null 2>&1 </dev/null || wrc=$?
+    else "$PR_WATCH_PROVIDER" wait >/dev/null 2>&1 </dev/null || wrc=$?; fi
+    [ "$wrc" -ne 0 ] && settle "$PR"
   # gh already implements the waiting. Its exit status is informational here --
   # the verdict below decides, not this call.
-  if [ -n "$PR" ]; then gh pr checks "$PR" --watch >/dev/null 2>&1 || true
+  elif [ -n "$PR" ]; then gh pr checks "$PR" --watch >/dev/null 2>&1 || true
   else gh pr checks --watch >/dev/null 2>&1 || true; fi
 fi
 
