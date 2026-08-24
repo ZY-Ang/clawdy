@@ -12,9 +12,12 @@ TMP=${TMPDIR:-/tmp}/lifecycle-test.$$
 mkdir -p "$TMP/bin"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
-if command -v gh >/dev/null 2>&1; then
-  echo "lifecycle.test: a real gh is on PATH; the no-gh cases would be meaningless" >&2; exit 1
-fi
+# These cases fake gh, so they need it absent from the PATH the code under
+# test sees -- NOT absent from the operator's machine. This used to refuse and
+# exit 1, the same code a real failure uses, so a full-suite run was red on
+# any machine that has gh.
+. "$HERE/lib/gh-free.sh"
+PATH=$(gh_free_path "$TMP/nogh"); export PATH
 export CLAUDE_QUESTIONS_DIR=$TMP/notes
 export CLAUDE_CODE_SESSION_ID=sess-aaaa
 export HOME=$TMP

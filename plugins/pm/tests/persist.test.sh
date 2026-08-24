@@ -48,10 +48,12 @@ gh_absent()  { rm -f "$TMP/bin/gh"; }
 # utilities, and enumerating them by hand is how a test breaks on the next
 # machine. Only `gh` is controlled, so this is only sound if the host has none —
 # assert that rather than assume it.
-if command -v gh >/dev/null 2>&1; then
-  echo "persist.test: a real gh is on PATH; the no-gh cases below would be meaningless" >&2
-  exit 1
-fi
+# These cases fake gh, so they need it absent from the PATH the code under
+# test sees -- NOT absent from the operator's machine. This used to refuse and
+# exit 1, the same code a real failure uses, so a full-suite run was red on
+# any machine that has gh.
+. "$HERE/lib/gh-free.sh"
+PATH=$(gh_free_path "$TMP/nogh"); export PATH
 call() { cmd=$1; shift; PATH="$TMP/bin:$PATH" sh "$BIN/$cmd" "$@"; }
 # A task now requires the three ordering axes. These cases are about DURABILITY
 # -- what happens when gh is missing, failing or silent -- so the axes are
@@ -133,7 +135,7 @@ rc_is "sync without gh -> exit 1" $? 1
 # The requirement is only worth having if a note that never reached the tracker
 # comes back ranked. Replaying it without the axes would reintroduce the exact
 # decay through the one path nobody looks at.
-rm -rf "$TMP/notes"; no_gh
+rm -rf "$TMP/notes"; gh_absent
 call file-issue task "Axed note" --priority high --urgency low --size s --severity security --body b >/dev/null 2>&1
 note=$(find "$TMP/notes" -name '*.md' 2>/dev/null | head -1)
 if [ -n "$note" ]; then

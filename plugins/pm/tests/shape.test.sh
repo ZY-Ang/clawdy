@@ -12,9 +12,12 @@ TMP=${TMPDIR:-/tmp}/shape-test.$$
 mkdir -p "$TMP/bin"
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
-if command -v gh >/dev/null 2>&1; then
-  echo "shape.test: a real gh is on PATH; these cases assume none" >&2; exit 1
-fi
+# These cases fake gh, so they need it absent from the PATH the code under
+# test sees -- NOT absent from the operator's machine. This used to refuse and
+# exit 1, the same code a real failure uses, so a full-suite run was red on
+# any machine that has gh.
+. "$HERE/lib/gh-free.sh"
+PATH=$(gh_free_path "$TMP/nogh"); export PATH
 export CLAUDE_QUESTIONS_DIR=$TMP/notes CLAUDE_CODE_SESSION_ID=sess-shape HOME=$TMP
 
 fails=0 ran=0
