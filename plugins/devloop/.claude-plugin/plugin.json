@@ -1,7 +1,7 @@
 {
   "name": "devloop",
   "description": "Work a GitHub backlog unattended without stalling: prove a PR is actually mergeable before asking for review, poll for CI success because it is never evented, answer review threads only after pushing the fix, and schedule with something that survives the container.",
-  "version": "0.18.0",
+  "version": "0.18.1",
   "author": {
     "name": "ZY-Ang"
   },
