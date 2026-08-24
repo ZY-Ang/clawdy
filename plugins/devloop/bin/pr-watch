@@ -28,6 +28,11 @@
 #   view [<id>]   one pull request as JSON, on stdout. No id means "the one for
 #                 the current branch". The shape is FIELDS below.
 #   list          the ids of your open pull requests, one per line. --all only.
+#   mark          OPTIONAL: the glyph that references a code-review item on this
+#                 backend -- "#" on GitHub, "!" on GitLab, where "#123" names
+#                 an ISSUE instead. Anything but a single character is ignored
+#                 and "#" is used, so a provider that does not implement it
+#                 behaves exactly as before.
 #   wait <id>     OPTIONAL: block until checks settle. ANY non-zero exit -- the
 #                 verb unimplemented, the waiter broken, auth expired -- means
 #                 pr-watch polls view instead, so --wait works on every backend
@@ -85,6 +90,15 @@ for a in "$@"; do
     *) PR=$a ;;
   esac
 done
+
+# --all exits before the wait block, so --wait was ACCEPTED AND IGNORED: the
+# gate reported before checks settled, silently, which is the one failure the
+# readiness rule exists to prevent. Refusing is the honest answer -- waiting on
+# every open PR in turn is a different tool.
+if [ "$ALL" -eq 1 ] && [ "$WAIT" -eq 1 ]; then
+  echo "pr-watch: --all and --wait cannot be combined; --wait needs one pull request"
+  exit 2
+fi
 
 command -v jq >/dev/null || { echo "pr-watch: jq is not installed"; exit 2; }
 # Both seams below stand in for gh, so only demand gh when we will really call it.
@@ -196,6 +210,20 @@ SUMMARY_JQ='
       ($c | length) ]
   | @tsv'
 
+# The glyph, asked for once per run. A provider that does not answer `mark`, or
+# answers with something that is not a single character, gets GitHub's "#".
+MARK=""
+ref_mark() {
+  if [ -z "$MARK" ]; then
+    MARK='#'
+    if [ -n "${PR_WATCH_PROVIDER:-}" ] && [ -z "${PR_WATCH_JSON:-}" ]; then
+      _m=$("$PR_WATCH_PROVIDER" mark 2>/dev/null </dev/null | head -1)
+      case "$_m" in ?) MARK=$_m ;; esac
+    fi
+  fi
+  printf '%s' "$MARK"
+}
+
 verdict() {
   # One jq call, read positionally -- ten separate calls was ten forks per PR.
   line=$(printf '%s' "$1" | jq -r "$SUMMARY_JQ" 2>/dev/null) || {
@@ -214,7 +242,7 @@ verdict() {
   [ "$num" = "NONE" ] && num="?"
   true
 
-  printf '#%s %s\n' "$num" "$title"
+  printf '%s%s %s\n' "$(ref_mark)" "$num" "$title"
   printf '  state %s · draft %s · mergeable %s · %s · checks %s/%s passed' \
     "$state" "$draft" "$mrg" "$msg" "$((total - pending - failed))" "$total"
   if [ -n "$rev" ]; then printf ' · review %s' "$rev"; fi
