@@ -122,19 +122,36 @@ TEXT=$(printf '%s' "$LAST" \
   | sed 's/`[^`]*`//g' \
   | sed 's|[A-Za-z][A-Za-z0-9+.-]*://[^[:space:],;()<>"*]*||g')
 
-# Bare refs: #N or !N. The class before the marker excludes alphanumerics
-# (glued refs like PR#63), "/" (a # in a URL path), and the two markers
-# themselves (## headings, !!).
-BARE=$(printf '%s' "$TEXT" | grep -oE '(^|[^0-9A-Za-z/!#])[#!][0-9]+' | sed 's/^[^#!]//')
-
-# Path-prefixed refs: two or more slash-joined segments glued to the marker.
-# Reported whole -- "group/project!123" says more to a reader than "!123".
-# The last segment may be empty, so a trailing slash ("group/project/#123")
-# does not let the ref through -- it sits between both patterns otherwise.
-PATHED=$(printf '%s' "$TEXT" | grep -oE '[A-Za-z0-9._-]+(/[A-Za-z0-9._-]*)+[#!][0-9]+')
-
-REFS=$(printf '%s\n%s\n' "$BARE" "$PATHED" | grep -v '^[[:space:]]*$' \
-  | sort -u | tr '\n' ' ' | sed 's/ *$//')
+# ONE SCAN, classifying each marker by what precedes it. Two independent
+# grep -o passes could not see each other: a pathed ref was reported AND the
+# bare ref inside it was reported again ("!1 -/-!1"), while a second marker
+# inside a path was dropped entirely, because grep -o does not produce
+# overlapping matches and the first match consumed the text the second needed.
+#
+#   preceded by a path (anything containing "/")  -> the whole path ref
+#   preceded by a plain word, no slash            -> glued, exempt (PR#63)
+#   preceded by "#" or "!"                        -> ## heading, !!, exempt
+#   anything else                                 -> a bare ref
+REFS=$(printf '%s' "$TEXT" | awk '
+  {
+    line = $0
+    while (match(line, /[#!][0-9]+/)) {
+      s = RSTART; l = RLENGTH
+      m = substr(line, s, l)
+      pre = substr(line, 1, s - 1)
+      rest = substr(line, s + l)
+      if (pre ~ /[\/A-Za-z0-9._-]$/) {
+        # A slash anywhere in the trailing run makes it a project path. The
+        # leading segment may be empty so that the SECOND ref in "a#1/b#2" is
+        # still reported rather than silently dropped.
+        if (match(pre, /[A-Za-z0-9._-]*(\/[A-Za-z0-9._-]*)+$/))
+          print substr(pre, RSTART, RLENGTH) m
+      } else if (pre !~ /[#!]$/) {
+        print m
+      }
+      line = rest
+    }
+  }' | sort -u | tr '\n' ' ' | sed 's/ *$//')
 
 [ -n "$REFS" ] || exit 0
 
