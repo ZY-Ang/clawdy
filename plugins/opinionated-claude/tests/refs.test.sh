@@ -26,6 +26,10 @@ say() {
   echo $?
 }
 blocks() { if [ "$(say "$2")" -eq 2 ]; then ok "$1"; else bad "$1" "not blocked"; fi; }
+namesrefs() {
+  printf '%s' "$1" | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
+  printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/null | head -1
+}
 allows() { if [ "$(say "$2")" -eq 0 ]; then ok "$1"; else bad "$1" "blocked, should not be"; fi; }
 
 # --- the shape that produced this hook ---------------------------------------
@@ -116,6 +120,25 @@ blocks "a path with a trailing slash"   "See group/project/#123 here."
 # The documented exemption, pinned like the other known limits. project#123 is
 # lexically identical to PR#63; no rule fires on one without the other.
 allows "a single segment stays exempt"  "The project#123 build is green."
+# ...but only for "#". The collision that forced the slash rule belongs to "#"
+# alone: PR#63, step#2, a hex colour. "!" glued to digits after a word is not
+# something English does, so sqlgate!406 -- the short form people actually type
+# for a merge request -- has no ambiguity to protect and should fire.
+blocks "a slash-less project before !" "The pipeline is fixed.
+
+See sqlgate!406 for it."
+blocks "a dotted project before !"     "See my.proj!12 for it."
+allows "a word before # stays exempt"  "The PR#63 title was fine."
+allows "!!42 is still not a ref"       "Wait!!42 was the version before."
+allows "a bare ! is not a ref"         "It works! 42 times over."
+# Named WHOLE, like the pathed form: "sqlgate!406" tells the reader which
+# project, which is the entire complaint. "!406" repeats the problem. The
+# exit-code assertions above cannot see this.
+r=$(namesrefs 'See sqlgate!406 for it.')
+case "$r" in
+  *'sqlgate!406'*) ok "a slash-less project ref is named whole" ;;
+  *) bad "a slash-less project ref is named whole" "$r" ;;
+esac
 
 # The pathed grep must run on the STRIPPED text, like the bare one. Without
 # these, gutting the fence, link and code-span strips for PATHED alone left the
@@ -228,6 +251,35 @@ printf '%s' "See group/project!123 for it." | jq -Rs '{type:"assistant",message:
 # whatever PATHED reports.
 out=$(printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/null | head -1)
 case "$out" in *'group/project!123'*) ok "names a pathed ref whole" ;; *) bad "names a pathed ref whole" "$out" ;; esac
+
+# --- the message must name each ref exactly once, and drop none ---------------
+# Two independent grep -o passes reported a pathed ref AND the bare ref inside
+# it ("!1 -/-!1"), and dropped a second marker inside a path entirely, because
+# grep -o does not overlap. The verdict was right in both; the list was not,
+# and a list that names one of two wrong refs sends the reader to fix the wrong
+# thing.
+r=$(namesrefs 'See -/-!1 and _/_!2 here.')
+case "$r" in
+  *'!1 -/-!1'*|*'!2 _/_!2'*) bad "a punctuation prefix is not named twice" "$r" ;;
+  *'-/-!1'*'_/_!2'*) ok "a punctuation prefix is named once, whole" ;;
+  *) bad "a punctuation prefix is named once" "$r" ;;
+esac
+
+r=$(namesrefs 'See group/a#1/b#2 here.')
+case "$r" in
+  *'#2'*) ok "a second marker inside a path is not dropped" ;;
+  *) bad "a second marker inside a path is not dropped" "$r" ;;
+esac
+
+# The plain shapes must still be named exactly as before.
+r=$(namesrefs 'Filed #64 and #65.')
+case "$r" in *'#64 #65'*) ok "two bare refs, both named" ;; *) bad "two bare refs" "$r" ;; esac
+r=$(namesrefs 'See group/project!123 and #64.')
+case "$r" in
+  *'!123 group'*) bad "a pathed ref is not also named bare" "$r" ;;
+  *'group/project!123'*) ok "a pathed ref beside a bare one, each once" ;;
+  *) bad "pathed beside bare" "$r" ;;
+esac
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
