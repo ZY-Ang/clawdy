@@ -74,7 +74,15 @@ if [ -n "${BACKLOG_ISSUES_JSON:-}${BACKLOG_ISSUE_JSON:-}${BACKLOG_DEPS_JSON:-}${
   exit 1
 fi
 
-command -v gh  >/dev/null 2>&1 || { echo "live.test: PM_LIVE_REPO is set but gh is not installed" >&2; exit 1; }
+# The CLI follows the provider. This suite says PM_PROVIDER selects a backend
+# and that the contract rather than GitHub is what gets exercised -- but it
+# demanded gh whatever the provider, so no second backend could ever reach it.
+case "${PM_PROVIDER:-github}" in
+  gitlab) LIVE_CLI=glab ;;
+  *)      LIVE_CLI=gh ;;
+esac
+command -v "$LIVE_CLI" >/dev/null 2>&1 || {
+  echo "live.test: PM_LIVE_REPO is set but $LIVE_CLI is not installed" >&2; exit 1; }
 command -v jq  >/dev/null 2>&1 || { echo "live.test: jq is required" >&2; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "live.test: git is required" >&2; exit 1; }
 
@@ -96,16 +104,17 @@ provider_available || {
   exit 1
 }
 
-# The one gh call that is not contract: no provider function clones a repo,
-# and the suite needs a real checkout for the claim's branch and push.
+# The one CLI call that is not contract: no provider function clones a repo,
+# and the suite needs a real checkout for the claim's branch and push. gh and
+# glab take the same `repo clone <path> <dir>` shape.
 TMP=${TMPDIR:-/tmp}/live-test.$$
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT INT TERM
-gh repo clone "$PM_LIVE_REPO" "$TMP/wt" 2>"$TMP/clone.err" \
+"$LIVE_CLI" repo clone "$PM_LIVE_REPO" "$TMP/wt" 2>"$TMP/clone.err" \
   && ok "cloned $PM_LIVE_REPO" \
   || { bad "clone failed" "$(cat "$TMP/clone.err" 2>/dev/null || true)"; exit 1; }
 
-# gh clones an empty repo to an unborn HEAD, which git cannot branch from.
+# A clone of an empty repo lands on an unborn HEAD, which git cannot branch from.
 # Give it one base commit so the claim has something to push against.
 if ! git -C "$TMP/wt" rev-parse --verify HEAD >/dev/null 2>&1; then
   ( cd "$TMP/wt"
@@ -272,6 +281,10 @@ case "$(provider_name)" in
     gh pr close "$PR_NUM" --repo "$REPO" --delete-branch >/dev/null 2>&1 \
       && ok "the claim's draft PR is closed and its branch deleted" \
       || bad "could not close the claim's draft PR -- close #$PR_NUM by hand" ;;
+  gitlab)
+    glab mr close "$PR_NUM" -R "$REPO" >/dev/null 2>&1 \
+      && ok "the claim's draft MR is closed" \
+      || bad "could not close the claim's draft MR -- close !$PR_NUM by hand" ;;
   *) printf 'note: the claim protocol left the draft PR open -- the contract has no way to close one (see #56)\n' ;;
 esac
 

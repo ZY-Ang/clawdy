@@ -79,7 +79,7 @@ fi
 printf '%s' "$ISSUE" | jq -e . >/dev/null 2>&1 || {
   echo "backlog-release: issue $NUM did not come back as JSON -- refusing to guess" >&2; exit 2; }
 
-LABELS=$(printf '%s' "$ISSUE" | jq -r '[.labels[]? | (.name // .)] | join(" ")')
+LABELS=$(printf '%s' "$ISSUE" | jq -r '[.labels[]? | (if type == "object" then .name else . end) | strings] | join(" ")')
 case " $LABELS " in
   *" claimed "*) ;;
   *) echo "backlog-release: issue $NUM is not claimed. Nothing to hand back." >&2; exit 1 ;;

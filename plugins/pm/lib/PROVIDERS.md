@@ -37,7 +37,7 @@ are needed by the tools that use them; implement what you use.
 | `provider_available` | `0` if reachable now | everything |
 | `provider_issues <repo>` | open issues, JSON array | `backlog-queue` `backlog-cluster` |
 | `provider_issue <n> <repo>` | one issue, JSON | `backlog-claim` `backlog-release` |
-| `provider_needs_human <repo>` | blocked issues + comments, JSON | `check-replies` |
+| `provider_needs_human <repo>` | blocked issues + comments, **oldest first** | `check-replies` |
 | `provider_create_issue <repo> <title> [label…]` | URL; **body on stdin** | `file-issue` `ask-async` |
 | `provider_comment <n> <body> <repo>` | — | `reply-issue` `backlog-*` |
 | `provider_label <n> <label> add\|remove <repo>` | — | `reply-issue` `backlog-*` |
@@ -60,9 +60,26 @@ are needed by the tools that use them; implement what you use.
   "blockedBy": [7, 9] }
 ```
 
+**Labels may be strings OR objects, and consumers must accept both.** `gh` returns
+`[{"name":"task"}]`; `glab` returns `["task"]`. The idiom `(.name // .)` looks like it
+handles both and does not — `//` catches `null` and `false`, while indexing a *string* with
+`.name` is a hard jq error. Use `(if type == "object" then .name else . end)`. Every binary
+that read a label carried the broken form, so the whole toolset died on the second backend.
+
+**Timestamps may carry fractional seconds.** GitHub sends `...T10:12:28Z`, GitLab sends
+`...T10:12:28.895Z`, and jq's `fromdateiso8601` rejects the fractional part outright. Trim
+before parsing rather than making each provider round.
+
 **Anything you cannot supply is an empty array, never absent.** A consumer that has to
 test for missing keys grows a branch per backend, which is the coupling the seam exists
 to prevent.
+
+**Comment order is part of the shape, and `check-replies` turns on it.** It reads the LAST
+comment and asks whether it carries the agent mark; reversed, every question is reported as
+the opposite of its real state and still looks like it works. A backend that mixes its own
+activity records into the comment stream must strip them — GitLab files "changed title
+from" and "marked as related to" as notes alongside human ones, so an untouched stream
+reports a question as answered by whatever the tracker last did to it.
 
 `blockedBy` accepts a bare integer **or** an object carrying `number`. Both, because
 `gh` returns different shapes from different subcommands — and because this repo's own
@@ -77,6 +94,37 @@ after a pipe `$?` is the last stage's, and POSIX `sh` has no `PIPESTATUS` (#39).
 **Degrade, do not fail.** `provider_supports_deps` is the pattern: probe once, and if the
 backend has no dependency graph, produce an order without the dependents term rather than
 an error.
+
+**A capability can be licensed, not just absent.** GitLab's blocking issue links are a paid
+feature. Measured against a real project on gitlab.com free:
+
+| `link_type` | result |
+| --- | --- |
+| `is_blocked_by` | `403 Blocked issues not available for current license` |
+| `blocks` | `403`, the same |
+| `relates_to` | `201`, a symmetric "related" edge |
+
+So the same backend has a dependency graph on one instance and none on another, and a
+provider must neither assume nor hardcode either — the Enterprise instances people run at
+work have it, gitlab.com free does not.
+
+**Both ends of a directed edge report different types, so read the end you mean.** For
+"A is blocked by B", measured on a licensed instance:
+
+| call | `link_type` | the other side |
+| --- | --- | --- |
+| `GET /issues/A/links` | `is_blocked_by` | B — the blocker |
+| `GET /issues/B/links` | `blocks` | A |
+| `POST /issues/A/links link_type=is_blocked_by` | returns **`blocks`** | — |
+
+The POST response describes the link from the far end. Believing it instead of re-reading
+inverts the graph.
+
+**Never substitute a weaker edge for the one asked for.** `relates_to` is symmetric and
+carries no direction: recording a blocker as "related" would let the queue read a
+bidirectional edge as an ordering constraint and produce a confidently wrong order. No
+dependency graph beats a graph that lies about direction. The 403 is passed to the caller
+in `PROVIDER_ERR` instead, in GitLab's own words.
 
 **Never discard the backend's diagnostic.** Put it in `PROVIDER_ERR` and let the caller
 print it. `_gh_write` and `_gh_read` do this. Three different failures once printed the

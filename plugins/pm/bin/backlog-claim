@@ -81,7 +81,7 @@ printf '%s' "$ISSUE" | jq -e . >/dev/null 2>&1 || {
 
 TITLE=$(printf '%s' "$ISSUE" | jq -r '.title // empty')
 STATE=$(printf '%s' "$ISSUE" | jq -r '.state // "OPEN"' | tr '[:lower:]' '[:upper:]')
-LABELS=$(printf '%s' "$ISSUE" | jq -r '[.labels[]? | (.name // .)] | join(" ")')
+LABELS=$(printf '%s' "$ISSUE" | jq -r '[.labels[]? | (if type == "object" then .name else . end) | strings] | join(" ")')
 
 [ -n "$TITLE" ] || { echo "backlog-claim: issue $NUM has no title -- is that the right number?" >&2; exit 2; }
 
