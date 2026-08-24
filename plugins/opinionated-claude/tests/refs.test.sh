@@ -139,6 +139,34 @@ allows "a hash with no digits" "The bug is in # comment handling."
 allows "a space after the marker" "It is issue # 42 on the list."
 allows "no refs at all"      "Both suites pass; CI is green."
 
+# --- inline backticks: pair, or strip nothing on that line -------------------
+# The second inline strip, s/`[^`]*//g, consumes a leftover backtick together
+# with everything after it -- to END OF LINE, not to the quote. So one stray
+# backtick hid every ref after it and the guard passed silently. That is the
+# same failure the fence rule above was written to prevent, one level down,
+# and it argues the same remedy: if the backticks on a line do not pair up,
+# strip nothing on that line rather than everything past the odd one.
+blocks "a stray backtick does not swallow a ref" 'Stray ` before it: see #64 too.'
+blocks "a stray backtick before a URL and a ref" 'Stray ` here: see https://a.com/b/c#42 and #64 too.'
+blocks "an odd backtick with a pathed ref after" 'Stray ` here: group/project!123 is next.'
+# The pairing case must keep working: a quoted ref is not a citation.
+allows "balanced backticks still quote"      'The message says `backlog-claim #42` fails.'
+allows "two pairs on one line"               'Both `#42` and `#43` are quoted here.'
+# An odd count on ONE line must not disarm quoting on the others.
+blocks "an odd line does not disarm the rest" 'Stray ` on this line with #64.
+
+And `#65` is properly quoted, but #66 is not.'
+# A quoted ref on the SAME line as a stray tick stays quoted. An earlier fix
+# left the whole line alone when the ticks did not pair, which reported the
+# properly-quoted #42 as bare -- a false positive on correct writing.
+printf '%s' 'See `#42` and a stray ` then #64.' | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
+out=$(printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/null | head -1)
+case "$out" in
+  *'#42'*) bad "a quoted ref beside a stray tick stays quoted" "$out" ;;
+  *'#64'*) ok "a quoted ref beside a stray tick stays quoted" ;;
+  *) bad "a quoted ref beside a stray tick stays quoted" "no ref reported: $out" ;;
+esac
+
 # --- fences: pairing, not swallowing ------------------------------------------
 # An odd fence is a typo, and the first version treated everything after it as
 # code -- one stray backtick-triple hid a real ref and the guard passed

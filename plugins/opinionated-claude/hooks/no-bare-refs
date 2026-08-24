@@ -17,7 +17,12 @@
 #
 #   [text](url)     a markdown link already carries its URL; its text is not a
 #                   bare citation
-#   `code`          quoting a reference is not citing one -- inline and fenced
+#   `code`          quoting a reference is not citing one -- inline and fenced.
+#                   PAIRS ONLY. There used to be a second pass, s/`[^`]*//g,
+#                   for an unbalanced leftover; it consumed the stray tick AND
+#                   everything after it to end of line, so one typo hid every
+#                   ref that followed. Stripping pairs alone leaves the stray
+#                   tick as ordinary text, which is what it is.
 #   scheme://...    a ref already written as a URL is not a bare one, and a URL
 #                   path is shaped exactly like a project path (see below).
 #                   ANY scheme, not just http -- ftp:// and git+ssh:// carry the
@@ -114,7 +119,7 @@ TEXT=$(printf '%s' "$LAST" \
         }
       }' \
   | sed 's/\[[^]]*\]([^)]*)//g' \
-  | sed 's/`[^`]*`//g; s/`[^`]*//g' \
+  | sed 's/`[^`]*`//g' \
   | sed 's|[A-Za-z][A-Za-z0-9+.-]*://[^[:space:],;()<>"*]*||g')
 
 # Bare refs: #N or !N. The class before the marker excludes alphanumerics
