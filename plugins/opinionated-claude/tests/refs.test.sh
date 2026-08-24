@@ -43,6 +43,22 @@ blocks "refs after a sentence" "That is the fix.
 
 Fixed the retry, then pushed. See #55 for the remaining guard work."
 
+# --- path-prefixed refs: the form other hosts actually print --------------------
+# On a host where a project is a PATH rather than a flat owner/repo,
+# group/subgroup/project!123 is the ordinary way to cite a merge request. The
+# word-glue carve-out below hid it: the character before the marker is a
+# letter, so the original class never fired. A slash in the prefix is what
+# separates the two -- PR#63 has none, a project path always has one.
+blocks "a path-prefixed MR ref"    "The pipeline change is up.
+
+See group/project!123 for the fix."
+blocks "a subgroup path, nested"   "The pipeline change is up.
+
+See group/subgroup/project!123 for the fix."
+blocks "a path-prefixed issue ref" "That is tracked already.
+
+See group/project#123 for the detail."
+
 # --- what must still pass -----------------------------------------------------
 allows "full URLs"           "Waiting on your merge of:
 
@@ -66,6 +82,11 @@ Nothing else to add.'
 # The # exclusion is exercised here: ##42 must not match, or a markdown
 # heading with a digit would block. The earlier case said "## Two rules" and
 # had no digit to exclude -- it passed with the class wrong.
+# Path-shaped matching would otherwise read a URL path as a project path, so
+# bare URLs are stripped before matching. A ref already written as a URL is
+# self-evidently not a bare one.
+allows "a bare URL with a numeric fragment" "The anchor is at https://example.com/docs/page#123."
+allows "a bare URL ending in a ref path"    "See https://gitlab.com/group/project/-/merge_requests/123 for it."
 allows "##42 heading, no match" "##42 the rule, at last."
 # A markdown link already carries its URL; its link text is not a bare
 # citation. The first version blocked this and demanded the URL it had.
