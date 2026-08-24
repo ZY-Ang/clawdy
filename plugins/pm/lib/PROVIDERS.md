@@ -60,6 +60,16 @@ are needed by the tools that use them; implement what you use.
   "blockedBy": [7, 9] }
 ```
 
+**Labels may be strings OR objects, and consumers must accept both.** `gh` returns
+`[{"name":"task"}]`; `glab` returns `["task"]`. The idiom `(.name // .)` looks like it
+handles both and does not — `//` catches `null` and `false`, while indexing a *string* with
+`.name` is a hard jq error. Use `(if type == "object" then .name else . end)`. Every binary
+that read a label carried the broken form, so the whole toolset died on the second backend.
+
+**Timestamps may carry fractional seconds.** GitHub sends `...T10:12:28Z`, GitLab sends
+`...T10:12:28.895Z`, and jq's `fromdateiso8601` rejects the fractional part outright. Trim
+before parsing rather than making each provider round.
+
 **Anything you cannot supply is an empty array, never absent.** A consumer that has to
 test for missing keys grows a branch per backend, which is the coupling the seam exists
 to prevent.

@@ -97,10 +97,16 @@ fi
 # a label read five ways is five slightly different definitions.
 scan() {
   printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson stale "$STALE" --arg mark "$AGENT_MARK" '
-    def lbl: [ .labels[]? | (.name // .) ];
+    def lbl: [ .labels[]? | (if type == "object" then .name else . end) ];
+    # GitLab stamps milliseconds ("...T10:12:28.895Z"), GitHub does not, and the
+    # fromdateiso8601 builtin rejects the fractional part outright -- so every
+    # ordering died on the second backend. Trimmed before parsing rather than
+    # requiring each provider to round, which only moves the trap.
+    # No apostrophes below: this jq program is inside a single-quoted shell
+    # string, and one would end it.
+    def isodate: (. // "1970-01-01T00:00:00Z") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
     def has($l): lbl | index($l) != null;
-    def age: ((.updatedAt // .createdAt // "1970-01-01T00:00:00Z")
-              | fromdateiso8601? // 0) as $t | (($now - $t) / 3600);
+    def age: (.updatedAt // .createdAt | isodate? // 0) as $t | (($now - $t) / 3600);
     # The last comment being agent-marked means the ball is still with the
     # human. This is the verdict check-replies computes; it is read the same way
     # here rather than invented a second time.

@@ -168,6 +168,67 @@ for m in "$HERE"/../../*/.claude-plugin/plugin.json; do
   esac
 done
 
+# --- string labels: the shape the second backend actually sends ---------------
+# `(.name // .)` was written to accept both an object label and a bare string,
+# and does NOT: `//` catches null and false, while indexing a STRING with .name
+# is a hard jq error. Every binary that reads a label died on it, so the whole
+# toolset was inoperable against a backend that sends strings -- which is what
+# gitlab sends. Found by running the binaries against a live instance; no
+# fixture-driven test used a string label anywhere.
+LBLTMP=${TMPDIR:-/tmp}/seam-labels.$$
+mklbl() { printf '[{"number":1,"title":"t","state":"OPEN","labels":%s,"createdAt":"2026-01-01T00:00:00Z","updatedAt":"2026-01-01T00:00:00Z","comments":[],"blockedBy":[]}]\n' "$1" > "$LBLTMP"; }
+
+mklbl '["task","priority-high","size-s","urgency-low"]'
+for b in backlog-queue backlog-cluster backlog-triage; do
+  out=$(BACKLOG_ISSUES_JSON="$LBLTMP" BACKLOG_NOW=1787184000 sh "$BIN/$b" 2>&1)
+  case "$out" in
+    *"Cannot index string"*|*"could not parse"*) bad "$b survives string labels" "$out" ;;
+    *) ok "$b survives string labels" ;;
+  esac
+done
+
+mklbl '[{"name":"task"},{"name":"priority-high"},{"name":"size-s"},{"name":"urgency-low"}]'
+out=$(BACKLOG_ISSUES_JSON="$LBLTMP" BACKLOG_NOW=1787184000 sh "$BIN/backlog-queue" 2>&1)
+case "$out" in
+  *"Cannot index"*|*"could not parse"*) bad "object labels still work" "$out" ;;
+  *) ok "object labels still work -- both shapes, per the contract" ;;
+esac
+rm -f "$LBLTMP" 2>/dev/null
+
+# --- fractional-second timestamps --------------------------------------------
+# jq's fromdateiso8601 rejects "...T10:12:28.895Z" outright. GitHub never sends
+# a fractional part; GitLab always does, so every ordering died on the second
+# backend with "does not match format". No fixture had one.
+TSTMP=${TMPDIR:-/tmp}/seam-ts.$$
+mkts() { printf '[{"number":1,"title":"t","state":"OPEN","labels":["task"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]}]\n' "$1" "$1" > "$TSTMP"; }
+for stamp in 2026-08-20T00:00:00.895Z 2026-08-20T00:00:00Z; do
+  for b in backlog-queue backlog-triage; do
+    mkts "$stamp"
+    out=$(BACKLOG_ISSUES_JSON="$TSTMP" BACKLOG_NOW=1787184000 sh "$BIN/$b" 2>&1)
+    case "$out" in
+      *"does not match format"*|*"could not parse"*) bad "$b parses $stamp" "$out" ;;
+      *) ok "$b parses $stamp" ;;
+    esac
+  done
+done
+rm -f "$TSTMP" 2>/dev/null
+
+# --- every binary must parse as sh --------------------------------------------
+# These scripts embed long jq programs inside SINGLE-quoted strings, so one
+# apostrophe in a comment ends the string and the rest of the file becomes
+# shell. The file still reads correctly; only `sh -n` sees it. That is exactly
+# how it happened, in a comment reading "and jq's builtin".
+for f in "$BIN"/*; do
+  [ -f "$f" ] || continue
+  if sh -n "$f" 2>/dev/null; then ok "$(basename "$f") parses as sh"
+  else bad "$(basename "$f") parses as sh" "$(sh -n "$f" 2>&1 | head -1)"; fi
+done
+for f in "$HERE"/../lib/*.sh; do
+  [ -f "$f" ] || continue
+  if sh -n "$f" 2>/dev/null; then ok "$(basename "$f") parses as sh"
+  else bad "$(basename "$f") parses as sh" "$(sh -n "$f" 2>&1 | head -1)"; fi
+done
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)
