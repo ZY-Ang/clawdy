@@ -1,0 +1,36 @@
+#!/bin/sh
+# Every hook a hooks.json names must be executable IN THE INDEX.
+#
+# Claude Code runs a hook by path, not through `sh`, so a file committed 100644
+# cannot run at all. The mode travels in the index, so it survives clone and
+# reaches every install -- and a guard that never fires is indistinguishable
+# from a guard with nothing to catch. Two shipped that way and neither had ever
+# executed since release.
+#
+# Checked against `git ls-files -s`, not the working tree: a filesystem that
+# reports everything as 0777 (a network share, a mounted volume) hides it
+# locally while the committed mode stays wrong.
+#
+#   sh .github/bin/hooks-executable
+set -u
+fail=0
+for cfg in plugins/*/hooks/hooks.json; do
+  [ -f "$cfg" ] || continue
+  plugin=$(dirname "$(dirname "$cfg")")
+  # Hook commands are ${CLAUDE_PLUGIN_ROOT}/hooks/<name>; take the basename.
+  for name in $(sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"[^"]*\/hooks\/\([A-Za-z0-9._-]*\)".*/\1/p' "$cfg"); do
+    f=$plugin/hooks/$name
+    if [ ! -f "$f" ]; then
+      echo "hooks-executable: $cfg names $name, which does not exist"; fail=1; continue
+    fi
+    mode=$(git ls-files -s -- "$f" | awk '{print $1}')
+    case "$mode" in
+      100755) ;;
+      "") echo "hooks-executable: $f is not tracked by git"; fail=1 ;;
+      *) echo "hooks-executable: $f is committed $mode, so it can never run."
+         echo "                  fix with: git update-index --chmod=+x $f"; fail=1 ;;
+    esac
+  done
+done
+[ "$fail" -eq 0 ] && echo "hooks-executable: every hook named in a hooks.json is executable"
+exit $fail
