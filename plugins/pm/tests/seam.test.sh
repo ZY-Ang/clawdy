@@ -130,6 +130,12 @@ tri() { provider_is_triaged "$1"; echo $?; }
 [ "$(tri '{"labels":[{"name":"priority-low"}]}')" -eq 1 ] \
   && ok "one axis missing -> not triaged" || bad "partial -> 1"
 [ "$(tri '{"labels":[]}')" -eq 1 ] && ok "no axes at all -> not triaged" || bad "none -> 1"
+# The seventh label site, and the last one with no coverage: is_triaged was only
+# ever fed the object shape, so its share of the (.name // .) bug was invisible.
+[ "$(tri '{"labels":["priority-low","urgency-low","size-s"]}')" -eq 0 ] \
+  && ok "string labels -> triaged, same as objects" || bad "string labels -> 0"
+[ "$(tri '{"labels":["priority-low"]}')" -eq 1 ] \
+  && ok "string labels, one axis missing -> not triaged" || bad "partial strings -> 1"
 [ "$(tri 'not json')" -eq 2 ] && ok "unusable input -> cannot tell, never triaged" || bad "bad input -> 2"
 
 # The contract says a caller that gets 2 must SAY SO rather than rank quietly.
@@ -220,69 +226,107 @@ for shape in '["task","claimed"]' '[{"name":"task"},{"name":"claimed"}]'; do
     *) ok "backlog-release reads $kind labels" ;;
   esac
 done
+# THE SHAPES THAT ARE NEITHER. `| strings` exists so a label that is neither a
+# string nor {name} degrades to "no labels" rather than aborting the run one
+# shape further out. Nothing exercised it -- the suite only ever fed the two
+# well-formed shapes. {"nodes":[...]} is not hypothetical: backlog-queue's own
+# comment records gh returning blockedBy in exactly that wrapper.
+for shape in '[null]' '[123]' '[{"id":7}]' '[["nested"]]' '{"nodes":[{"name":"task"}]}'; do
+  mklbl "$shape"
+  for b in backlog-queue backlog-cluster backlog-triage; do
+    out=$(lblrun "$b"); rc=$?
+    if [ "$rc" -le 1 ] && [ -n "$out" ]
+    then ok "$b degrades on $shape"
+    else bad "$b degrades on $shape" "exit $rc: $(printf '%s' "$out" | head -1)"; fi
+  done
+done
 rm -f "$LBLTMP" "$ONETMP" 2>/dev/null
 
 # --- fractional-second timestamps --------------------------------------------
 # jq's fromdateiso8601 rejects "...T10:12:28.895Z". GitHub never sends a
 # fractional part; GitLab always does.
 #
-# The first version of this test could not see the triage half at all: its
-# `isodate? // 0` swallowed the error, so both stamps produced output either
-# way. What distinguishes them is the ANSWER -- an unparsed stamp fell back to
-# epoch 0, i.e. infinitely old, so a fresh claim was reported stale.
-TSTMP=${TMPDIR:-/tmp}/seam-ts.$$
-mkts() { printf '[{"number":1,"title":"needle-title","state":"OPEN","labels":["task","claimed"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]}]\n' "$1" "$1" > "$TSTMP"; }
-for stamp in 2026-08-20T00:00:00.895Z 2026-08-20T00:00:00Z 2026-08-20T00:00:00+00:00; do
-  mkts "$stamp"
-  out=$(BACKLOG_ISSUES_JSON="$TSTMP" BACKLOG_NOW=1787184000 sh "$BIN/backlog-queue" 2>&1); rc=$?
-  if [ "$rc" -le 1 ] && [ -n "$out" ] && ! printf '%s' "$out" | grep -q 'could not parse'
-  then ok "backlog-queue parses $stamp"
-  else bad "backlog-queue parses $stamp" "exit $rc: $(printf '%s' "$out" | head -1)"; fi
-
-  # An issue stamped one second before BACKLOG_NOW is not stale. Under a failed
-  # parse it dated to epoch 0 and triage reported it quiet for ~496440h.
-  mkts "$stamp"
-  out=$(BACKLOG_ISSUES_JSON="$TSTMP" BACKLOG_NOW=1787184060 STALE_HOURS=24 sh "$BIN/backlog-triage" 2>&1)
-  case "$out" in
-    *"stale claims"*) bad "backlog-triage dates $stamp correctly" "reported stale: $(printf '%s' "$out" | grep -o 'quiet for [0-9]*h' | head -1)" ;;
-    *) ok "backlog-triage dates $stamp correctly" ;;
-  esac
-done
-rm -f "$TSTMP" 2>/dev/null
-
-# THE DIRECTION OF THE FALLBACK. An unparseable stamp must mean "age unknown",
-# not "epoch 0". Falling back to 0 made a fresh claim report as quiet for
-# ~496440h -- a confident false positive, which is worse than silence.
-TSBAD=${TMPDIR:-/tmp}/seam-tsbad.$$
-for stamp in "2026-08-20T00:00:00+05:30" "not-a-date" ""; do
-  printf '[{"number":1,"title":"needle-title","state":"OPEN","labels":["task","claimed"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]}]\n' "$stamp" "$stamp" > "$TSBAD"
-  out=$(BACKLOG_ISSUES_JSON="$TSBAD" BACKLOG_NOW=1787184060 STALE_HOURS=24 sh "$BIN/backlog-triage" 2>&1)
-  case "$out" in
-    *"stale claims"*) bad "an unparsed stamp is not infinitely old [$stamp]" "$(printf '%s' "$out" | grep -o 'quiet for [0-9]*h' | head -1)" ;;
-    *) ok "an unparsed stamp is not infinitely old [$stamp]" ;;
-  esac
-done
-rm -f "$TSBAD" 2>/dev/null
-
-# A +00:00 offset must date the SAME as its Z form. Checking only that the
-# queue printed something cannot see this: an unparsed stamp falls back to
-# $now, so the queue still runs and merely dates the issue wrongly. Ageing is
-# what exposes it -- an old low-priority issue escalates above a fresh
-# medium-priority one, and a stamp read as "now" does not.
-OFFTMP=${TMPDIR:-/tmp}/seam-off.$$
-offfirst() {
-  printf '[{"number":1,"title":"aged-low","state":"OPEN","labels":["task","priority-low","size-s","urgency-low"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]},{"number":2,"title":"fresh-med","state":"OPEN","labels":["task","priority-med","size-s","urgency-low"],"createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:00:00Z","comments":[],"blockedBy":[]}]\n' "$1" "$1" > "$OFFTMP"
-  BACKLOG_ISSUES_JSON="$OFFTMP" BACKLOG_NOW=1787184000 ESCALATE_DAYS=30 sh "$BIN/backlog-queue" 2>&1 | head -1
+# CHECKING THAT SOMETHING WAS PRINTED CANNOT SEE THIS. The unparsed-stamp
+# fallback (to $now, so an unknown age is not "infinitely old") means a failed
+# parse no longer errors -- the queue still prints and triage still reports
+# not-stale. Both of those satisfied the first version of this test, so the fix
+# it guarded was silently revertible. Only comparing ANSWERS distinguishes them:
+# ageing for the queue, staleness for triage.
+AGETMP=${TMPDIR:-/tmp}/seam-age.$$
+# An old low-priority issue escalates above a fresh medium one -- unless its
+# stamp was not read, in which case it dates to now and does not.
+agefirst() {
+  printf '[{"number":1,"title":"aged-low","state":"OPEN","labels":["task","priority-low","size-s","urgency-low"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]},{"number":2,"title":"fresh-med","state":"OPEN","labels":["task","priority-med","size-s","urgency-low"],"createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:00:00Z","comments":[],"blockedBy":[]}]\n' "$1" "$1" > "$AGETMP"
+  BACKLOG_ISSUES_JSON="$AGETMP" BACKLOG_NOW=1787184000 ESCALATE_DAYS=30 sh "$BIN/backlog-queue" 2>&1 | head -1
 }
-z=$(offfirst "2020-01-01T00:00:00Z")
-off=$(offfirst "2020-01-01T00:00:00+00:00")
-now=$(offfirst "2026-08-19T00:00:00Z")
-case "$z" in *aged-low*) ok "an old Z stamp escalates above a fresher higher priority" ;;
-  *) bad "Z ageing" "$z" ;; esac
-if [ "$off" = "$z" ] && [ "$off" != "$now" ]
-then ok "+00:00 dates the same as Z, and not as now"
-else bad "+00:00 dates the same as Z" "offset=[$off] z=[$z] now=[$now]"; fi
-rm -f "$OFFTMP" 2>/dev/null
+# A claim untouched since 2020 is stale -- unless its stamp was not read.
+stalefirst() {
+  printf '[{"number":1,"title":"aged-claim","state":"OPEN","labels":["task","claimed"],"createdAt":"%s","updatedAt":"%s","comments":[],"blockedBy":[]}]\n' "$1" "$1" > "$AGETMP"
+  BACKLOG_ISSUES_JSON="$AGETMP" BACKLOG_NOW=1787184000 STALE_HOURS=24 sh "$BIN/backlog-triage" 2>&1
+}
+
+zq=$(agefirst "2020-01-01T00:00:00Z")
+nowq=$(agefirst "2026-08-19T00:00:00Z")
+case "$zq" in *aged-low*) ok "an old Z stamp escalates above a fresher higher priority" ;;
+  *) bad "Z ageing" "$zq" ;; esac
+case "$nowq" in *fresh-med*) ok "and a fresh one does not" ;; *) bad "fresh control" "$nowq" ;; esac
+
+# Every stamp form GitLab or GitHub can send must date the SAME as plain Z.
+for stamp in "2020-01-01T00:00:00.895Z" "2020-01-01T00:00:00+00:00" "2020-01-01T00:00:00.895+00:00"; do
+  got=$(agefirst "$stamp")
+  if [ "$got" = "$zq" ] && [ "$got" != "$nowq" ]
+  then ok "backlog-queue dates $stamp as it dates Z"
+  else bad "backlog-queue dates $stamp as it dates Z" "got=[$got] z=[$zq] now=[$nowq]"; fi
+
+  got=$(stalefirst "$stamp")
+  case "$got" in
+    *"stale claims"*) ok "backlog-triage dates $stamp as it dates Z" ;;
+    *) bad "backlog-triage dates $stamp as it dates Z" "an aged claim was not reported stale" ;;
+  esac
+done
+# The Z control for triage, so the assertion above cannot pass by never firing.
+case "$(stalefirst "2020-01-01T00:00:00Z")" in
+  *"stale claims"*) ok "the triage Z control reports stale" ;;
+  *) bad "triage Z control" "$(stalefirst "2020-01-01T00:00:00Z")" ;;
+esac
+case "$(stalefirst "2026-08-19T23:00:00Z")" in
+  *"stale claims"*) bad "a fresh claim is not stale" ;;
+  *) ok "and a fresh claim is not reported stale" ;;
+esac
+
+# THE DIRECTION OF THE FALLBACK, for BOTH binaries. An unparseable stamp must
+# mean "age unknown", not epoch 0 -- which is "infinitely old" and reports a
+# fresh issue as ancient. The queue half was unguarded.
+for stamp in "2020-01-01T00:00:00+05:30" "not-a-date" ""; do
+  got=$(agefirst "$stamp")
+  if [ "$got" = "$nowq" ]
+  then ok "backlog-queue treats an unparsed stamp as now, not epoch 0 [$stamp]"
+  else bad "backlog-queue unparsed-stamp direction [$stamp]" "got=[$got] wanted=[$nowq]"; fi
+  case "$(stalefirst "$stamp")" in
+    *"stale claims"*) bad "backlog-triage unparsed-stamp direction [$stamp]" "reported stale" ;;
+    *) ok "backlog-triage treats an unparsed stamp as now [$stamp]" ;;
+  esac
+done
+rm -f "$AGETMP" 2>/dev/null
+
+# --- a scan that cannot run must say so --------------------------------------
+# backlog-triage's scan() swallowed jq's stderr and dropped its status, so a
+# failure died with stdout AND stderr empty -- read as "triage found nothing".
+# The first fix was unreachable: `set -e` terminates the subshell at a bare
+# failing pipeline, so the diagnostic never executed.
+JQSHIM=${TMPDIR:-/tmp}/seam-jqshim.$$
+mkdir -p "$JQSHIM"
+REALJQ=$(command -v jq)
+printf '#!/bin/sh\ncase "$*" in *"--arg check"*) echo "jq: forced failure" >&2; exit 5 ;; esac\nexec %s "$@"\n' "$REALJQ" > "$JQSHIM/jq"
+chmod +x "$JQSHIM/jq"
+printf '[{"number":1,"title":"t","state":"OPEN","labels":["task","claimed"],"createdAt":"2026-08-20T00:00:00Z","updatedAt":"2026-08-20T00:00:00Z","comments":[],"blockedBy":[]}]\n' > "$JQSHIM/i.json"
+out=$(PATH="$JQSHIM:$PATH" BACKLOG_ISSUES_JSON="$JQSHIM/i.json" BACKLOG_NOW=1787184000 sh "$BIN/backlog-triage" 2>&1); rc=$?
+[ "$rc" -eq 2 ] && ok "a failing scan exits 2, not jq's own code" || bad "scan failure exit" "got $rc"
+case "$out" in
+  *"could not scan the issue list"*) ok "and names the failure instead of dying silently" ;;
+  *) bad "scan failure diagnostic" "out=[$out]" ;;
+esac
+rm -rf "$JQSHIM" 2>/dev/null
 
 # --- every binary must parse as sh --------------------------------------------
 # These scripts embed long jq programs inside SINGLE-quoted strings, so one

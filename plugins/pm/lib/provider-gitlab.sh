@@ -267,8 +267,12 @@ provider_needs_human() {
   _limit=${PM_LIMIT:-100}
   # Validated like STALE_HOURS is: `[ -ge ]` on a non-number ERRORS rather than
   # comparing, which leaves the paging guard inoperative and the loop spinning.
+  # 0 is rejected too: it passes a digits-only check and then empties the array,
+  # so a plausible typo for "no limit" becomes a confident "nothing outstanding".
   case "$_limit" in
-    ''|*[!0-9]*) PROVIDER_ERR="PM_LIMIT must be a whole number, got: $_limit"; return 2 ;;
+    ''|*[!0-9]*|0)
+      PROVIDER_ERR="PM_LIMIT must be a positive whole number, got: $_limit"
+      rm -f "$_tmp" 2>/dev/null; return 2 ;;
   esac
   _page=1
   jq -n '[]' > "$_tmp"
@@ -289,10 +293,13 @@ provider_needs_human() {
   # is the one function that makes a call per row, so the overshoot was 50
   # extra HTTP requests.
   jq --argjson n "$_limit" '.[0:$n]' < "$_tmp" > "$_tmp.c" 2>/dev/null \
-    && mv "$_tmp.c" "$_tmp"
+    && mv "$_tmp.c" "$_tmp" || {
+    rm -f "$_tmp" "$_tmp.c" "$_ids" 2>/dev/null; return 2; }
 
   _ids=$(mktemp)
-  jq -r '.[].iid' < "$_tmp" > "$_ids" 2>/dev/null || {
+  # Deduped: a list repeating an iid produced one row and one notes call per
+  # copy, which is the redundant request the PM_LIMIT cap exists to avoid.
+  jq -r '[.[].iid] | unique_by(.) | .[]' < "$_tmp" > "$_ids" 2>/dev/null || {
     rm -f "$_tmp" "$_ids" 2>/dev/null; return 2; }
 
   # One object per line, slurped once at the end. The first version re-read and
@@ -324,7 +331,8 @@ provider_needs_human() {
       rm -f "$_tmp" "$_out" "$_ids" "$_notes" 2>/dev/null; return 2; }
     rm -f "$_notes" 2>/dev/null
   done < "$_ids"
-  jq -s '.' < "$_out"
+  jq -s '.' < "$_out" || {
+    rm -f "$_tmp" "$_out" "$_ids" 2>/dev/null; return 2; }
   rm -f "$_tmp" "$_out" "$_ids" 2>/dev/null
 }
 

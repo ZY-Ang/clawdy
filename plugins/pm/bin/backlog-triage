@@ -32,6 +32,11 @@
 
 set -eu
 
+# One scratch file for jq's stderr, removed on exit. scan() runs inside command
+# substitutions, so anything it creates cannot be cleaned by itself.
+TRIAGE_ERR=$(mktemp)
+trap 'rm -f "$TRIAGE_ERR"' EXIT INT TERM
+
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 PM_LIB=$HERE/../lib
 . "$PM_LIB/load-provider.sh"
@@ -96,8 +101,14 @@ fi
 # Splitting these across passes means re-deriving the label set five times, and
 # a label read five ways is five slightly different definitions.
 scan() {
-  _serr=${_serr:-$(mktemp)}
-  printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson stale "$STALE" --arg mark "$AGENT_MARK" '
+  # One scratch file for the whole run, removed on exit: _serr assigned inside
+  # scan() never persists, because every call site is a command substitution --
+  # so it leaked a fresh mktemp per call, four per healthy run.
+  _serr=${TRIAGE_ERR:?}
+  # `set -e` terminates this subshell at a bare failing pipeline, so `_rc=$?`
+  # and the diagnostic below never ran -- the fix was unreachable. The
+  # pipeline is the `if` condition now, where -e does not apply.
+  if ! printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson stale "$STALE" --arg mark "$AGENT_MARK" '
     def lbl: [ .labels[]? | (if type == "object" then .name else . end) | strings ];
     # GitLab stamps milliseconds ("...T10:12:28.895Z"), GitHub does not, and the
     # fromdateiso8601 builtin rejects the fractional part outright -- so every
@@ -141,13 +152,11 @@ scan() {
                   and (((.parent // null) == null)))
            | "#\(.number)  finding with no parent issue  \(.title)"
       else empty end
-  ' --arg check "$1" 2>"$_serr"
-  _rc=$?
-  # Not 2>/dev/null with the status dropped. Under set -eu a jq failure made
-  # OUT=$(scan ...) inherit jq's exit 5 -- a code this script never otherwise
-  # uses -- and die with stdout AND stderr empty, which reads as "triage found
-  # nothing" rather than "triage could not run".
-  if [ "$_rc" -ne 0 ]; then
+  ' --arg check "$1" 2>"$_serr"; then
+    # Not 2>/dev/null with the status dropped. Under set -eu a jq failure made
+    # OUT=$(scan ...) inherit jq's exit 5 -- a code this script never otherwise
+    # uses -- and die with stdout AND stderr empty, which reads as "triage found
+    # nothing" rather than "triage could not run".
     echo "backlog-triage: could not scan the issue list ($1)" >&2
     sed 's/^/  /' "$_serr" >&2
     return 2
