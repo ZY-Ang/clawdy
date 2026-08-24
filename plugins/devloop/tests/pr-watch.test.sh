@@ -99,6 +99,7 @@ case "\$1" in
   list) printf '42\\n43\\n' ;;
   view) cat "$TMP/$1.json" ;;
   wait) exit ${2:-3} ;;
+  *) exit 2 ;;
 esac
 PROV
   chmod +x "$TMP/prov"
@@ -190,6 +191,108 @@ out=$(PR_WATCH_PROVIDER="$TMP/pollprov" PR_WATCH_INTERVAL=0 sh "$BIN" 42 --wait 
 if [ "$rc" -eq 0 ] && [ "$(grep -c '^view' "$TMP/prov.log")" -ge 2 ]
 then printf 'ok   %-22s polled to settled\n' provider-wait-polls
 else fails=$((fails + 1)); printf 'FAIL %-22s exit %s, views %s\n' provider-wait-polls "$rc" "$(grep -c '^view' "$TMP/prov.log")"; fi
+
+# --- what a broken provider must never look like ------------------------------
+# Each of these is a shape a half-written provider actually takes. None may
+# produce exit 0: that is the code a loop reads as "nothing left to do".
+badprov() { printf '#!/bin/sh\n%s\n' "$1" > "$TMP/bad"; chmod +x "$TMP/bad"; }
+bad_assert() {
+  ran=$((ran + 1))
+  PR_WATCH_PROVIDER="$TMP/bad" sh "$BIN" ${3:-} >/dev/null 2>&1; rc=$?
+  if [ "$rc" -eq "$2" ]; then printf 'ok   %-22s exit %s\n' "$1" "$rc"
+  else fails=$((fails + 1)); printf 'FAIL %-22s exit %s, wanted %s\n' "$1" "$rc" "$2"; fi
+}
+
+# Exits 0 and prints nothing. The header promises this is "could not tell".
+badprov 'exit 0'
+bad_assert view-silent-zero 2
+
+# Prints a clean, ready pull request but exits non-zero. Status beats stdout --
+# a provider that reported failure has not told us the PR is fine.
+badprov 'cat '"$TMP"'/clean-approved.json; exit 1'
+bad_assert view-json-but-fails 2
+
+# A directory passes -x, then fails at exec with a message naming neither the
+# variable nor the cause.
+ran=$((ran + 1))
+PR_WATCH_PROVIDER="$TMP" sh "$BIN" >/dev/null 2>&1
+if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2\n' provider-is-a-dir
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' provider-is-a-dir; fi
+
+# A list that exits 0 printing nothing is genuinely indistinguishable from "no
+# open pull requests", which IS exit 0. Pinned so the reading is deliberate:
+# the guard against a silent fall-through is the provider's obligation to exit
+# non-zero on an unknown verb, documented in the header, not something pr-watch
+# can detect. Changing this to 2 would report every empty queue as a failure.
+badprov 'case "$1" in list) exit 0 ;; *) exit 2 ;; esac'
+bad_assert list-empty-is-zero 0 --all
+
+# --- config that is a typo, not a value ---------------------------------------
+# Both used to end the run at exit 1 with no verdict printed -- and dash and
+# bash disagreed about which way. Exit 1 means "not ready, reason on stdout".
+ran=$((ran + 1))
+mkprov clean-approved
+PR_WATCH_INTERVAL=abc PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" 42 --wait >/dev/null 2>&1
+if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2\n' bad-interval
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' bad-interval; fi
+ran=$((ran + 1))
+PR_WATCH_TIMEOUT=abc PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" 42 --wait >/dev/null 2>&1
+if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2\n' bad-timeout
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' bad-timeout; fi
+
+# --- the file seam wins on --all too -----------------------------------------
+# Otherwise the data comes from the fixture but the number of pull requests
+# iterated comes from a live host, and a test run reaches the network.
+ran=$((ran + 1))
+: > "$TMP/prov.log"; mkprov clean-approved
+PR_WATCH_JSON="$TMP/clean-approved.json" PR_WATCH_PROVIDER="$TMP/prov" sh "$BIN" --all >/dev/null 2>&1
+if [ ! -s "$TMP/prov.log" ]; then printf 'ok   %-22s provider untouched\n' all-json-wins
+else fails=$((fails + 1)); printf 'FAIL %-22s log: %s\n' all-json-wins "$(tr '\n' ' ' < "$TMP/prov.log")"; fi
+
+# --- --all aggregates to the WORST outcome, in either order -------------------
+# "could not tell" must not be masked by a merely-not-ready sibling.
+ran=$((ran + 1))
+cat > "$TMP/mixed" <<MIXED
+#!/bin/sh
+case "\$1" in
+  list) printf '42\\n43\\n' ;;
+  view) if [ "\$2" = 42 ]; then cat "$TMP/behind.json"; else exit 1; fi ;;
+  *) exit 2 ;;
+esac
+MIXED
+chmod +x "$TMP/mixed"
+PR_WATCH_PROVIDER="$TMP/mixed" sh "$BIN" --all >/dev/null 2>&1
+if [ $? -eq 2 ]; then printf 'ok   %-22s exit 2 beats 1\n' all-worst-wins
+else fails=$((fails + 1)); printf 'FAIL %-22s\n' all-worst-wins; fi
+
+# --- a hiccup mid-poll is not an answer ---------------------------------------
+# One failed view used to end the wait as though checks had settled.
+ran=$((ran + 1))
+: > "$TMP/prov.log"
+cat > "$TMP/flaky" <<FLAKY
+#!/bin/sh
+echo "\$@" >> "$TMP/prov.log"
+case "\$1" in
+  wait) exit 3 ;;
+  view) n=\$(grep -c '^view' "$TMP/prov.log")
+        if [ "\$n" -eq 2 ]; then exit 4
+        elif [ "\$n" -lt 4 ]; then cat "$TMP/pending-checks.json"
+        else cat "$TMP/clean-approved.json"; fi ;;
+  *) exit 2 ;;
+esac
+FLAKY
+chmod +x "$TMP/flaky"
+out=$(PR_WATCH_PROVIDER="$TMP/flaky" PR_WATCH_INTERVAL=1 PR_WATCH_TIMEOUT=30 sh "$BIN" 42 --wait 2>&1); rc=$?
+if [ "$rc" -eq 0 ] && [ "$(grep -c '^view' "$TMP/prov.log")" -ge 4 ]
+then printf 'ok   %-22s polled past the hiccup\n' wait-survives-hiccup
+else fails=$((fails + 1)); printf 'FAIL %-22s exit %s, views %s\n' wait-survives-hiccup "$rc" "$(grep -c '^view' "$TMP/prov.log")"; fi
+
+# --- --help must show the contract it documents -------------------------------
+ran=$((ran + 1))
+h=$(sh "$BIN" --help 2>&1)
+if printf '%s' "$h" | grep -q PR_WATCH_PROVIDER && printf '%s' "$h" | grep -q 'wait <id>'
+then printf 'ok   %-22s names the provider verbs\n' help-covers-provider
+else fails=$((fails + 1)); printf 'FAIL %-22s help was truncated\n' help-covers-provider; fi
 
 # --- argument handling ------------------------------------------------------
 ran=$((ran + 1))

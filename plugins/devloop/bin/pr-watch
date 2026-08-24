@@ -31,10 +31,18 @@
 #   wait <id>     OPTIONAL: block until checks settle. EXIT 3 means "I do not
 #                 implement this", and pr-watch polls view instead -- so --wait
 #                 works on every backend, not only the ones that wrote a waiter.
+#                 EXIT 3 IS THE ONLY CODE READ HERE: any other status ends the
+#                 wait and lets the verdict speak, because a waiter that failed
+#                 has not proved anything either way.
 #
-# Any other non-zero exit is "could not tell", and becomes exit 2 here. That
-# matters more than it looks: a provider that fails quietly and prints nothing
-# must never be read as a clean pull request.
+# A view that exits non-zero, or exits 0 printing nothing, is "could not tell"
+# and becomes exit 2. A provider that fails quietly must never be read as a
+# clean pull request.
+#
+# MUST exit non-zero for a verb it does not recognise. A `case` with no default
+# arm exits 0 silently, and for `list` that is indistinguishable from "no open
+# pull requests" -- which pr-watch reports as exit 0, a clean sweep. That is the
+# one shape where a broken provider can be mistaken for good news.
 #
 # DERIVING mergeStateStatus. Not every host has one field for it, and BEHIND in
 # particular usually has none -- there is no "the base moved under this branch"
@@ -53,7 +61,7 @@ for a in "$@"; do
   case "$a" in
     --wait) WAIT=1 ;;
     --all)  ALL=1 ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^# Requires:/p' "$0"; exit 0 ;;
     -*) echo "pr-watch: unknown option $a" >&2; exit 2 ;;
     *) PR=$a ;;
   esac
@@ -62,8 +70,17 @@ done
 command -v jq >/dev/null || { echo "pr-watch: jq is not installed"; exit 2; }
 # Both seams below stand in for gh, so only demand gh when we will really call it.
 if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
-  [ -x "$PR_WATCH_PROVIDER" ] || {
-    echo "pr-watch: PR_WATCH_PROVIDER is not an executable: $PR_WATCH_PROVIDER"; exit 2; }
+  # -x alone is true for a directory, which then fails at exec with a message
+  # naming neither the variable nor the cause.
+  [ -f "$PR_WATCH_PROVIDER" ] && [ -x "$PR_WATCH_PROVIDER" ] || {
+    echo "pr-watch: PR_WATCH_PROVIDER is not an executable file: $PR_WATCH_PROVIDER"; exit 2; }
+  for v in PR_WATCH_INTERVAL PR_WATCH_TIMEOUT; do
+    eval "_val=\${$v:-}"
+    case "$_val" in
+      ''|*[!0-9]*) [ -z "$_val" ] || {
+        echo "pr-watch: $v must be a whole number of seconds, got: $_val"; exit 2; } ;;
+    esac
+  done
 elif [ -z "${PR_WATCH_JSON:-}" ]; then
   command -v gh >/dev/null || { echo "pr-watch: gh is not installed"; exit 2; }
 fi
@@ -85,15 +102,27 @@ fetch() {
 # Poll view until no check is still running, for providers that do not implement
 # wait. Field 8 of the summary is the pending count; @tsv escapes any tab in the
 # title, so the field positions hold.
+#
+# A single failed poll is a hiccup, not an answer -- gh pr checks --watch retries
+# and so does this. Three consecutive failures give up and let the verdict report
+# whatever it can. The interval has a floor of 1s: 0 spins the provider several
+# hundred times a second, which against a real host is a denial of service you
+# aimed at yourself.
 settle() {
   _deadline=$(( $(date +%s) + ${PR_WATCH_TIMEOUT:-1800} ))
+  _iv=${PR_WATCH_INTERVAL:-30}; [ "$_iv" -lt 1 ] && _iv=1
+  _miss=0
   while :; do
-    _j=$(fetch "$1") || return 0
-    [ -n "$_j" ] || return 0
-    _p=$(printf '%s' "$_j" | jq -r "$SUMMARY_JQ" 2>/dev/null | cut -f8) || return 0
-    [ "${_p:-0}" -eq 0 ] && return 0
+    _j=$(fetch "$1") || _j=""
+    _p=""
+    [ -n "$_j" ] && _p=$(printf '%s' "$_j" | jq -r "$SUMMARY_JQ" 2>/dev/null | cut -f8 | head -1)
+    case "$_p" in
+      ''|*[!0-9]*) _miss=$((_miss + 1)); [ "$_miss" -ge 3 ] && return 0 ;;
+      0) return 0 ;;
+      *) _miss=0 ;;
+    esac
     [ "$(date +%s)" -ge "$_deadline" ] && return 0
-    sleep "${PR_WATCH_INTERVAL:-30}"
+    sleep "$_iv"
   done
 }
 
@@ -202,7 +231,12 @@ verdict() {
 }
 
 if [ "$ALL" -eq 1 ]; then
-  if [ -n "${PR_WATCH_PROVIDER:-}" ]; then
+  if [ -n "${PR_WATCH_JSON:-}" ]; then
+    # The fixture describes one pull request, so that is what --all iterates.
+    # Calling the provider's list here would take the count from a live host
+    # while the data came from a file.
+    nums=$(jq -r '.number // 1' "$PR_WATCH_JSON" 2>/dev/null)
+  elif [ -n "${PR_WATCH_PROVIDER:-}" ]; then
     nums=$("$PR_WATCH_PROVIDER" list 2>/dev/null)
   else
     nums=$(gh pr list --author "@me" --state open --json number -q '.[].number' 2>/dev/null)

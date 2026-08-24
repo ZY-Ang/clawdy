@@ -50,8 +50,16 @@ The provider is any executable answering three verbs:
 | `list` | ids of your open pull requests, one per line. `--all` only |
 | `wait <id>` | **optional**: block until checks settle. Exit `3` means "not implemented", and `pr-watch` polls `view` instead |
 
-Any other non-zero exit is "could not tell" and becomes exit `2`. A provider that fails
-quietly must never read as a clean pull request.
+A `view` that exits non-zero, or exits `0` printing nothing, is "could not tell" and becomes
+exit `2`. A provider that fails quietly must never read as a clean pull request.
+
+For `wait`, exit `3` is the only status read: any other ends the wait and lets the verdict
+speak, since a waiter that failed has proved nothing either way.
+
+**A provider MUST exit non-zero for a verb it does not recognise.** A `case` with no default
+arm exits `0` silently, and for `list` that is indistinguishable from "no open pull requests"
+— which is reported as exit `0`, a clean sweep. It is the one shape where a broken provider
+can be mistaken for good news, and `pr-watch` cannot detect it.
 
 The JSON shape is the `FIELDS` list in `bin/pr-watch`. Two things to get right:
 
@@ -59,8 +67,10 @@ The JSON shape is the `FIELDS` list in `bin/pr-watch`. Two things to get right:
   the base moved under this branch — compare the recorded base sha against the target
   branch's current tip. A provider that omits it reports a stale `CLEAN`, and a verdict goes
   stale the moment the base moves.
-- **Polling knobs** for the `wait` fallback: `PR_WATCH_INTERVAL` (default 30s) and
-  `PR_WATCH_TIMEOUT` (default 1800s).
+- **Polling knobs** for the `wait` fallback: `PR_WATCH_INTERVAL` (default 30s, floored at 1s)
+  and `PR_WATCH_TIMEOUT` (default 1800s). Both must be whole numbers of seconds; a typo is
+  exit `2`, not a silently disabled wait. A single failed poll is a hiccup, not an answer —
+  three consecutive failures end the wait.
 
 This deliberately differs from how `pm` handles backends. `pm` *ships* its providers, because
 its backends are a small set of public trackers. Review infrastructure is not: it is usually
