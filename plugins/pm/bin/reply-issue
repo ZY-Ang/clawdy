@@ -52,7 +52,7 @@ case "$1" in -h|--help) usage 0 ;; esac
 NUMBER=$1; shift
 case "$NUMBER" in ''|*[!0-9]*) echo "reply-issue: first argument must be an issue or PR number" >&2; exit 2 ;; esac
 
-BODY=""; REPO=""; DRY=0; CLEARS=0; CLOSES=0; KEEPS=""; CLOSE_AS=completed
+BODY=""; REPO=${PM_REPO:-}; DRY=0; CLEARS=0; CLOSES=0; KEEPS=""; CLOSE_AS=completed
 if [ $# -gt 0 ]; then
   case "$1" in --*) ;; *) BODY=$1; shift ;; esac
 fi

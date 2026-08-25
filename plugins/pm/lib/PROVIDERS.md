@@ -15,7 +15,13 @@ Every binary in `bin/` goes through it. `tests/seam.test.sh` fails the build if 
 stops doing so, because a prose promise about an interface decays silently — six of
 the ten tools called `gh` directly for weeks and nothing said so.
 
-Which one loads is chosen by **`PM_PROVIDER`**, default `github`:
+Two knobs, and they answer different questions: **`PM_PROVIDER`** picks *which backend*,
+**`PM_REPO`** picks *where its issues go*. Without the second, the backend CLI resolves the
+project from the current directory's git remote — so a question filed by an agent lands in
+whatever repository its shell happened to be standing in. Both take a per-call `--repo`
+override, and leaving `PM_REPO` unset keeps the old cwd behaviour exactly.
+
+Which provider loads is chosen by **`PM_PROVIDER`**, default `github`:
 
 ```sh
 PM_PROVIDER=jira backlog-queue
@@ -138,6 +144,7 @@ wanted an integer; every call 422'd while every test passed. A fixture cannot ca
 
 | Seam | Stands in for |
 | --- | --- |
+| `PM_REPO` | the destination repository, when no `--repo` is given |
 | `BACKLOG_ISSUES_JSON` | `provider_issues` |
 | `BACKLOG_ISSUE_JSON` | `provider_issue` |
 | `BACKLOG_DEPS_JSON` | the whole dependency graph — **replaces**, never merges |

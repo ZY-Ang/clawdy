@@ -33,7 +33,7 @@ pm_load_provider || exit 2
 # has replied is decided by this one character, and two definitions of it is
 # two answers to that question the day one of them changes.
 MARK=$AGENT_MARK
-REPO=""; ALL=0; QUIET=0
+REPO=${PM_REPO:-}; ALL=0; QUIET=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --repo) REPO=$2; shift 2 ;;

@@ -68,7 +68,7 @@ esac
 [ $# -ge 1 ] || { echo "file-issue: a title is required" >&2; exit 2; }
 TITLE=$1; shift
 
-BODY=""; REPO=""; DRY=0; PRIORITY=""; URGENCY=""; SIZE=""; SEVERITY=""; AREA=""
+BODY=""; REPO=${PM_REPO:-}; DRY=0; PRIORITY=""; URGENCY=""; SIZE=""; SEVERITY=""; AREA=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --body) BODY=$2; shift 2 ;;

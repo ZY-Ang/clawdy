@@ -46,7 +46,7 @@ pm_load_provider || exit 2
 
 usage() { sed -n '2,31p' "$0"; exit "${1:-0}"; }
 
-ONLY=""; QUIET=0; REPO=""
+ONLY=""; QUIET=0; REPO=${PM_REPO:-}
 while [ $# -gt 0 ]; do
   case "$1" in
     --only)  ONLY=${2:?}; shift 2 ;;
