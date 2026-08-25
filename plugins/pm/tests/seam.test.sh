@@ -374,6 +374,82 @@ for b in backlog-queue check-replies backlog-triage; do
 done
 rm -rf "$REPOTMP" 2>/dev/null
 
+# --- the repo must reach the whole provider, not just the read half ---------
+# `--repo` routed provider_issues and nothing else. Two consequences, both
+# measured: the deps PROBE went to the ambient repo, and the four link
+# functions resolved the repo from cwd whenever the flag was omitted.
+PRTMP=${TMPDIR:-/tmp}/seam-prov.$$
+mkdir -p "$PRTMP/bin"
+PRPATH=$(gh_free_path "$PRTMP/nogh")
+# A gh that records every argv and answers plausibly.
+cat > "$PRTMP/bin/gh" <<GHFAKE
+#!/bin/sh
+printf '%s\n' "\$*" >> "$PRTMP/args"
+case "\$1" in
+  repo)  echo '{"nameWithOwner":"ambient/from-cwd"}'; echo "ambient/from-cwd" ;;
+  issue) echo '[]' ;;
+  api)   echo '[]' ;;
+  *)     echo '[]' ;;
+esac
+GHFAKE
+chmod +x "$PRTMP/bin/gh"
+prov() { rm -f "$PRTMP/args"; ( PATH="$PRTMP/bin:$PRPATH"; export PATH
+        . "$LIB/provider-github.sh"; "$@" >/dev/null 2>&1 ); cat "$PRTMP/args" 2>/dev/null; }
+
+# THE PROBE. When it goes to a different repository than the listing, a failure
+# there silently drops blockedBy from the fetch -- so backlog-queue reads [] for
+# every issue, the --blocked view empties, and the dependents ranking term goes
+# uniformly zero while the queue still prints a confident order.
+out=$(prov provider_issues owner/target)
+probe=$(printf '%s' "$out" | grep 'blockedBy' | head -1)
+case "$probe" in
+  *"--repo owner/target"*) ok "the deps probe asks about the repo being listed" ;;
+  *) bad "probe carries the repo" "probe argv: ${probe:-<none>}" ;;
+esac
+
+# The four link functions. With --repo omitted they ran `gh repo view` and wrote
+# the dependency edge into whatever repository the shell was standing in.
+for fn in provider_issue_id provider_blocked_by; do
+  out=$(prov "$fn" 5 owner/target)
+  case "$out" in
+    *"repo view"*) bad "$fn does not fall back to cwd" "it ran: gh repo view" ;;
+    *"owner/target"*) ok "$fn uses the repo it was given" ;;
+    *) bad "$fn uses the repo it was given" "argv: $(printf '%s' "$out" | head -1)" ;;
+  esac
+done
+out=$(prov provider_link 5 999 owner/target)
+case "$out" in
+  *"repo view"*) bad "provider_link does not fall back to cwd" "it ran: gh repo view" ;;
+  *"owner/target"*) ok "provider_link uses the repo it was given" ;;
+  *) bad "provider_link uses the repo it was given" "argv: $(printf '%s' "$out" | head -1)" ;;
+esac
+out=$(prov provider_unlink 5 999 owner/target)
+case "$out" in
+  *"repo view"*) bad "provider_unlink does not fall back to cwd" "it ran: gh repo view" ;;
+  *"owner/target"*) ok "provider_unlink uses the repo it was given" ;;
+  *) bad "provider_unlink uses the repo it was given" "argv: $(printf '%s' "$out" | head -1)" ;;
+esac
+
+# With no repo given at all, cwd inference is still the documented fallback --
+# nothing here should start refusing.
+out=$(prov provider_issue_id 5)
+case "$out" in *"repo view"*) ok "with no repo, cwd inference is unchanged" ;;
+  *) bad "no-repo fallback" "argv: $(printf '%s' "$out" | head -1)" ;; esac
+
+# Both providers must take the same argument, or the contract is a suggestion.
+for f in provider-github.sh provider-gitlab.sh; do
+  if grep -qE '^provider_supports_deps\(\)' "$LIB/$f"; then
+    if grep -A4 '^provider_supports_deps()' "$LIB/$f" | grep -q '\${1'; then
+      ok "$f: supports_deps accepts a repo"
+    else bad "$f: supports_deps accepts a repo" "takes no argument"; fi
+  fi
+done
+case "$(grep 'provider_supports_deps' "$LIB/PROVIDERS.md" | head -1)" in
+  *'<repo>'*) ok "the contract documents the argument" ;;
+  *) bad "contract documents supports_deps <repo>" "$(grep 'provider_supports_deps' "$LIB/PROVIDERS.md" | head -1)" ;;
+esac
+rm -rf "$PRTMP" 2>/dev/null
+
 # --- every binary must parse as sh --------------------------------------------
 # These scripts embed long jq programs inside SINGLE-quoted strings, so one
 # apostrophe in a comment ends the string and the rest of the file becomes
