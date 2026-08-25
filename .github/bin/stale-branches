@@ -23,6 +23,9 @@
 # opinionated-claude/conventions.md). This tool would have reported all seven as
 # live.
 #
+# REMOTE (default origin) and BASE (default: the remote's own HEAD) are both
+# settable, and both were undocumented until the guess above bit.
+#
 #   sh .github/bin/stale-branches            # list them
 #   sh .github/bin/stale-branches --commands # the delete commands, to run
 #
@@ -30,7 +33,21 @@
 # verified them should run the commands rather than ask.
 set -u
 REMOTE=${REMOTE:-origin}
-BASE=${BASE:-$REMOTE/main}
+# The default branch is READ, not guessed. `main` was hardcoded, so on a repo
+# whose default is master every `git diff "$BASE...$ref"` failed and the
+# `|| continue` below swallowed it -- a genuinely stale branch reported as
+# none, exit 0. This tool is meant to be pointed at other people's
+# repositories, which is exactly where that assumption breaks.
+if [ -z "${BASE:-}" ]; then
+  BASE=$(git symbolic-ref --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null) || BASE=""
+  # A fresh clone may have no remote HEAD ref; ask the remote itself.
+  [ -n "$BASE" ] || BASE=$(git remote show "$REMOTE" 2>/dev/null \
+    | sed -n 's/^ *HEAD branch: *//p' | head -1 | sed "s|^|$REMOTE/|")
+  [ -n "$BASE" ] || BASE=$REMOTE/main
+fi
+git rev-parse --verify "$BASE" >/dev/null 2>&1 || {
+  echo "stale-branches: '$BASE' is not a ref. Set BASE=<remote>/<branch>." >&2
+  exit 2; }
 MODE=${1:-list}
 git fetch "$REMOTE" --quiet 2>/dev/null || :
 

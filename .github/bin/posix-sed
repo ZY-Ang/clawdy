@@ -20,9 +20,20 @@
 #   sh .github/bin/posix-sed
 set -u
 fail=0
+scanned=0
+
+# Anchored to the repository this script SHIPS IN, not the caller's directory
+# and not `git rev-parse` -- which would resolve to whichever repo the caller
+# happened to be standing in. All of these globbed `plugins/*/...` relative to
+# cwd, so running one from anywhere else printed its success line having
+# examined zero files: the exact failure these guards exist to catch, in the
+# guards themselves.
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)" || exit 2
+
 for f in plugins/*/bin/* plugins/*/lib/*.sh plugins/*/hooks/* .github/bin/*; do
   [ -f "$f" ] || continue
   case "$f" in *.json|*.md|*.test.sh|*/posix-sed) continue ;; esac
+  scanned=$((scanned + 1))
   # Code lines only. A comment explaining the trap is not the trap, and the
   # first version of this guard flagged its own explanation of it.
   hits=$(grep -n 'sed' "$f" 2>/dev/null | grep -v '^[0-9]*: *#' | grep -E '\\\+|\\\?|\\\|' || true)
@@ -33,5 +44,7 @@ for f in plugins/*/bin/* plugins/*/lib/*.sh plugins/*/hooks/* .github/bin/*; do
   echo "           GNU-only BRE escape in a sed expression; BSD sed reads it literally"
   fail=1
 done
-[ "$fail" -eq 0 ] && echo "posix-sed: no GNU-only sed escapes in shipped scripts"
+[ "$scanned" -eq 0 ] && [ "$fail" -eq 0 ] && {
+  echo "posix-sed: found no scripts to scan — that is a broken run, not a clean one"; exit 2; }
+[ "$fail" -eq 0 ] && echo "posix-sed: $scanned script(s) scanned, no GNU-only sed escapes"
 exit $fail
