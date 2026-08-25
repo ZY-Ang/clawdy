@@ -217,6 +217,51 @@ listed=$(printf '%s' "$out" | grep -cE '^\s+q-[0-9]+' || true)
 id=$(printf '%s' "$out" | grep -oE 'q-[0-9]+' | head -1)
 [ -n "$id" ] && ok "and its id is not empty" || bad "spaced dir empty id" "$out"
 
+# --- an unscoped note must say so ---------------------------------------------
+# With no session id, q_session falls back to the literal `unsessioned`, so
+# every agent on the machine in that state shares one directory. The reminder
+# hook then shows each of them the others' open questions as its own, and sync
+# re-files all of them.
+#
+# interview-window hit the same fork and REFUSED, on the grounds that a window
+# nothing will read is worse than no window. That is right for a window and
+# wrong here: refusing would destroy the content persistence exists to protect.
+# So it writes, and says the note is unscoped.
+reset; gh_absent
+out=$( CLAUDE_CODE_SESSION_ID= CLAUDE_SESSION_ID= PATH="$TMP/bin:$PATH" \
+       sh "$BIN/file-issue" task "Unscoped one" $AX --body b 2>&1 )
+[ "$(notes)" = "1" ] && ok "an unsessioned filing still writes the note" || bad "unsessioned note written"
+if printf '%s' "$out" | grep -q 'unscoped and shared'
+then ok "and warns that it is unscoped"
+else bad "warns when unscoped" "[$out]"; fi
+if ingrep '^- session: unsessioned$'; then ok "the note records that it has no session" \
+  else bad "note records unsessioned"; fi
+
+# A normal filing must stay quiet -- a warning on every note is a warning nobody
+# reads.
+reset; gh_absent
+out=$( CLAUDE_CODE_SESSION_ID=sess-real PATH="$TMP/bin:$PATH" \
+       sh "$BIN/file-issue" task "Scoped one" $AX --body b 2>&1 )
+case "$out" in
+  *unscoped*) bad "a scoped filing must not warn" "$out" ;;
+  *) ok "a filing with a session id says nothing extra" ;;
+esac
+
+# The reminder must not present another agent's questions as this session's.
+reset
+mkdir -p "$CLAUDE_QUESTIONS_DIR/unsessioned"
+printf '# Someone else\n\n- id: q-99999\n- kind: question\n- status: open\n- asked: 2026-01-01T00:00:00Z\n- session: unsessioned\n- filed: no\n\n---\n\nbody\n' \
+  > "$CLAUDE_QUESTIONS_DIR/unsessioned/2026-01-01-someone-else-q-99999.md"
+out=$( CLAUDE_CODE_SESSION_ID= CLAUDE_SESSION_ID= PATH="$TMP/bin:$PATH" \
+       sh "$HERE/../hooks/remind-open-questions" 2>&1 </dev/null )
+case "$out" in
+  *q-99999*)
+    if printf '%s' "$out" | grep -q 'no session id'
+    then ok "the reminder marks unscoped questions as shared"
+    else bad "reminder marks unscoped questions" "$out"; fi ;;
+  *) bad "the reminder did not list the shared question at all" "$out" ;;
+esac
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)

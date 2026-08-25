@@ -19,7 +19,23 @@ SRC="$(cd "$(dirname "$0")" && pwd)/claude-statusline"
 DEST="$HOME/.claude/statusline.sh"
 
 SETTINGS="$HOME/.claude/settings.json"
-[ "${1:-}" = "--project" ] && SETTINGS=".claude/settings.json"
+if [ "${1:-}" = "--project" ]; then
+  # Anchored to the repository root. `.claude/settings.json` is relative, so
+  # running this from a subdirectory wrote a settings file Claude Code never
+  # reads -- a silent no-op that looked like a successful install.
+  ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "error: --project needs a git repository; run it inside one" >&2; exit 2; }
+  SETTINGS="$ROOT/.claude/settings.json"
+  # And the script goes INTO the project. A project settings.json is the kind of
+  # file that gets committed, so an absolute path into one person's home
+  # directory is inert for every teammate and every CI runner.
+  DEST="$ROOT/.claude/statusline.sh"
+  # Written into settings.json as a RELATIVE path. The file is committed, so an
+  # absolute one names a directory that exists on exactly one machine -- inert
+  # for every teammate and every CI runner. Claude Code runs the statusline
+  # command with the project root as its working directory.
+  CMD=".claude/statusline.sh"
+fi
 
 [ -f "$SRC" ] || { echo "error: cannot find $SRC" >&2; exit 1; }
 command -v jq >/dev/null || { echo "error: jq is required" >&2; exit 1; }
@@ -28,21 +44,23 @@ mkdir -p "$(dirname "$DEST")" "$(dirname "$SETTINGS")"
 cp "$SRC" "$DEST"
 chmod +x "$DEST"
 
+CMD=${CMD:-$DEST}
+
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 
 # Refuse to clobber a statusline the user already configured to something else.
 EXISTING=$(jq -r '.statusLine.command // ""' "$SETTINGS" 2>/dev/null || echo "")
-if [ -n "$EXISTING" ] && [ "$EXISTING" != "$DEST" ]; then
+if [ -n "$EXISTING" ] && [ "$EXISTING" != "$CMD" ]; then
   echo "A statusLine is already set in $SETTINGS:"
   echo "    $EXISTING"
   echo
   echo "Leaving it alone. To switch, set it to:"
-  echo "    $DEST"
+  echo "    $CMD"
   exit 0
 fi
 
 TMP=$(mktemp)
-jq --arg cmd "$DEST" '.statusLine = {"type":"command","command":$cmd}' "$SETTINGS" > "$TMP"
+jq --arg cmd "$CMD" '.statusLine = {"type":"command","command":$cmd}' "$SETTINGS" > "$TMP"
 mv "$TMP" "$SETTINGS"
 
 echo "Installed: $DEST"
