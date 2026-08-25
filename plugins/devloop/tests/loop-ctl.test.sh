@@ -191,6 +191,106 @@ rc_is "no scheduler at all -> 2" "$rc" 2
 if printf '%s' "$out" | grep -q 'send_later'; then ok "and points at send_later"; else bad "and points at send_later" "$out"; fi
 mv "$TMP/bin/launchctl.off" "$TMP/bin/launchctl"
 
+# --- --dir must reach the runtime, not just the scheduler --------------------
+# WORKDIR was written into the launchd plist and the crontab line and NOWHERE
+# ELSE. loop-run never chdir'd, so its working directory was whatever the caller
+# had -- and `doctor` calls it straight from the operator's shell.
+#
+# That tick is the FIRST one, so it consumes the bootstrap --session-id and
+# writes the state file. Every scheduled tick afterwards runs --resume against a
+# session created under a different project directory. The loop is dead, and the
+# check whose own comment says "only this is sufficient" certified it.
+mkloop_dir() {
+  rm -rf "$TMP/lh" "$TMP/proj" "$TMP/elsewhere"
+  mkdir -p "$TMP/lh" "$TMP/proj" "$TMP/elsewhere" "$TMP/bin"
+  printf '#!/bin/sh\nexit 0\n' > "$TMP/bin/launchctl"; chmod +x "$TMP/bin/launchctl"
+  ( cd "$TMP/proj" && git init -q . && git commit -q --allow-empty -m base ) 2>/dev/null
+}
+
+mkloop_dir
+( cd "$TMP/elsewhere" && CLAWDY_LOOP_HOME="$TMP/lh" PATH="$TMP/bin:$PATH" \
+  sh "$BIN" install dirtest --dir "$TMP/proj" --interval 10m --prompt tick ) >/dev/null 2>&1
+case "$(cat "$TMP/lh/dirtest.conf" 2>/dev/null)" in
+  *WORKDIR=*) ok "--dir is recorded in the conf, not only the scheduler entry" ;;
+  *) bad "WORKDIR in conf" "$(cat "$TMP/lh/dirtest.conf" 2>/dev/null | tr '\n' ' ')" ;;
+esac
+
+# The runtime must actually go there. A fake claude records its cwd.
+printf '#!/bin/sh\nprintf "%%s\\n" "$PWD" >> "%s/cwd.log"\nexit 0\n' "$TMP" > "$TMP/bin/claude"
+chmod +x "$TMP/bin/claude"
+: > "$TMP/cwd.log"
+( cd "$TMP/elsewhere" && CLAWDY_LOOP_HOME="$TMP/lh" CLAWDY_LOOP_CLAUDE="$TMP/bin/claude" \
+  PATH="$TMP/bin:$PATH" sh "$HERE/../bin/loop-run" dirtest ) >/dev/null 2>&1
+tickcwd=$(head -1 "$TMP/cwd.log" 2>/dev/null)
+case "$tickcwd" in
+  "$TMP/proj") ok "loop-run runs the tick in the recorded workdir" ;;
+  *) bad "loop-run chdirs to WORKDIR" "ran in: ${tickcwd:-<nothing>}" ;;
+esac
+
+# ...including when invoked from somewhere else entirely, which is exactly what
+# doctor does.
+mkloop_dir
+( cd "$TMP/elsewhere" && CLAWDY_LOOP_HOME="$TMP/lh" PATH="$TMP/bin:$PATH" \
+  sh "$BIN" install dirtest2 --dir "$TMP/proj" --interval 10m --prompt tick ) >/dev/null 2>&1
+: > "$TMP/cwd.log"
+( cd / && CLAWDY_LOOP_HOME="$TMP/lh" CLAWDY_LOOP_CLAUDE="$TMP/bin/claude" \
+  PATH="$TMP/bin:$PATH" sh "$HERE/../bin/loop-run" dirtest2 ) >/dev/null 2>&1
+tickcwd=$(head -1 "$TMP/cwd.log" 2>/dev/null)
+case "$tickcwd" in
+  "$TMP/proj") ok "and from an unrelated cwd, so doctor proves the real thing" ;;
+  *) bad "loop-run from / uses WORKDIR" "ran in: ${tickcwd:-<nothing>}" ;;
+esac
+
+# A loop installed with no --dir keeps today's behaviour: the install cwd.
+mkloop_dir
+( cd "$TMP/proj" && CLAWDY_LOOP_HOME="$TMP/lh" PATH="$TMP/bin:$PATH" \
+  sh "$BIN" install nodir --interval 10m --prompt tick ) >/dev/null 2>&1
+: > "$TMP/cwd.log"
+( cd / && CLAWDY_LOOP_HOME="$TMP/lh" CLAWDY_LOOP_CLAUDE="$TMP/bin/claude" \
+  PATH="$TMP/bin:$PATH" sh "$HERE/../bin/loop-run" nodir ) >/dev/null 2>&1
+tickcwd=$(head -1 "$TMP/cwd.log" 2>/dev/null)
+case "$tickcwd" in
+  "$TMP/proj") ok "with no --dir the install directory is recorded and used" ;;
+  *) bad "no --dir defaults to install cwd" "ran in: ${tickcwd:-<nothing>}" ;;
+esac
+
+# The pinned binary, for the same reason. doctor inherited whatever
+# CLAWDY_LOOP_CLAUDE the operator's shell had -- usually unset -- and so
+# certified `claude` from PATH, which may not be what launchd runs.
+mkloop_dir
+printf '#!/bin/sh\nprintf "PINNED\\n" >> "%s/which.log"\nexit 0\n' "$TMP" > "$TMP/bin/pinned-claude"
+chmod +x "$TMP/bin/pinned-claude"
+printf '#!/bin/sh\nprintf "PATHCLAUDE\\n" >> "%s/which.log"\nexit 0\n' "$TMP" > "$TMP/bin/claude"
+chmod +x "$TMP/bin/claude"
+( cd "$TMP/elsewhere" && CLAWDY_LOOP_HOME="$TMP/lh" CLAWDY_LOOP_CLAUDE="$TMP/bin/pinned-claude" \
+  PATH="$TMP/bin:$PATH" sh "$BIN" install pinned --dir "$TMP/proj" --interval 10m --prompt tick ) >/dev/null 2>&1
+: > "$TMP/which.log"
+# Deliberately NOT setting CLAWDY_LOOP_CLAUDE -- this is doctor's situation.
+( cd / && CLAWDY_LOOP_HOME="$TMP/lh" PATH="$TMP/bin:$PATH" \
+  sh "$HERE/../bin/loop-run" pinned ) >/dev/null 2>&1
+case "$(head -1 "$TMP/which.log" 2>/dev/null)" in
+  PINNED) ok "an unset env var falls back to the pinned binary, not PATH" ;;
+  *) bad "pinned binary used" "ran: $(head -1 "$TMP/which.log" 2>/dev/null || echo nothing)" ;;
+esac
+# An explicit env var must still win, or nothing can be tested or overridden.
+: > "$TMP/which.log"
+( cd / && CLAWDY_LOOP_HOME="$TMP/lh" CLAWDY_LOOP_CLAUDE="$TMP/bin/claude" PATH="$TMP/bin:$PATH" \
+  sh "$HERE/../bin/loop-run" pinned ) >/dev/null 2>&1
+case "$(head -1 "$TMP/which.log" 2>/dev/null)" in
+  PATHCLAUDE) ok "and an explicit env var still overrides it" ;;
+  *) bad "env override" "ran: $(head -1 "$TMP/which.log" 2>/dev/null || echo nothing)" ;;
+esac
+
+# A workdir that has since been deleted must fail loudly, not run somewhere else.
+mkloop_dir
+( cd "$TMP/elsewhere" && CLAWDY_LOOP_HOME="$TMP/lh" PATH="$TMP/bin:$PATH" \
+  sh "$BIN" install gone --dir "$TMP/proj" --interval 10m --prompt tick ) >/dev/null 2>&1
+rm -rf "$TMP/proj"
+out=$( cd / && CLAWDY_LOOP_HOME="$TMP/lh" CLAWDY_LOOP_CLAUDE="$TMP/bin/claude" \
+       PATH="$TMP/bin:$PATH" sh "$HERE/../bin/loop-run" gone 2>&1 ); rc=$?
+[ "$rc" -ne 0 ] && ok "a vanished workdir fails rather than running elsewhere" \
+  || bad "vanished workdir" "exit $rc: $out"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)

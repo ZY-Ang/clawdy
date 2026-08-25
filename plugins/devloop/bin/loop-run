@@ -26,7 +26,10 @@
 set -eu
 
 LOOP_HOME=${CLAWDY_LOOP_HOME:-$HOME/.claude/clawdy-loop}
-CLAUDE_BIN=${CLAWDY_LOOP_CLAUDE:-claude}
+# Resolved AFTER the conf is sourced: an explicit env var still wins, but the
+# path pinned at install beats a bare `claude` off PATH, so every caller runs
+# the binary the scheduler will.
+CLAUDE_BIN_ENV=${CLAWDY_LOOP_CLAUDE:-}
 
 NAME=""; DRY=0
 for a in "$@"; do
@@ -49,6 +52,20 @@ LOCK=$LOOP_HOME/$NAME.lock
 . "$CONF"
 [ -n "${SESSION_ID:-}" ] || { echo "loop-run: $CONF has no SESSION_ID" >&2; exit 2; }
 [ -n "${PROMPT:-}" ]    || { echo "loop-run: $CONF has no PROMPT" >&2; exit 2; }
+
+# The tick runs where the loop was installed, whoever invoked it. Without this
+# the cwd was the caller's -- so `loop-ctl doctor` proved the loop from the
+# operator's shell while the scheduler ran it somewhere else entirely.
+#
+# A missing workdir is fatal rather than a fallback to $PWD: running the tick in
+# the wrong project is the failure this exists to prevent, and doing it quietly
+# is how it went unnoticed.
+CLAUDE_BIN=${CLAUDE_BIN_ENV:-${CLAUDE_BIN:-claude}}
+
+if [ -n "${WORKDIR:-}" ]; then
+  cd "$WORKDIR" 2>/dev/null || {
+    echo "loop-run: WORKDIR '$WORKDIR' from $CONF is not reachable" >&2; exit 2; }
+fi
 INTERVAL=${INTERVAL:-600}
 
 # Test seam: pinning the clock makes the gap boundary exact. Without it the
