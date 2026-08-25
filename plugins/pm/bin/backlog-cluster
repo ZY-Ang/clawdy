@@ -42,7 +42,7 @@ pm_load_provider || exit 2
 
 usage() { sed -n '2,32p' "$0"; exit "${1:-0}"; }
 
-MIN=2; UNKEYED=0; REPO=""
+MIN=2; UNKEYED=0; REPO=${PM_REPO:-}
 while [ $# -gt 0 ]; do
   case "$1" in
     --min)     MIN=${2:?}; shift 2 ;;

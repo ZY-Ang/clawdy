@@ -1,6 +1,16 @@
 # Choose and load the backend.
 #
-#   PM_PROVIDER=github   (default)
+#   PM_PROVIDER=github   (default)   which backend
+#   PM_REPO=owner/name               where its issues go
+#
+# PM_PROVIDER pinned WHICH backend and nothing pinned WHERE, so a filed question
+# went wherever the shell was standing: with no --repo the provider omits -R and
+# the backend CLI resolves the project from the current directory's git remote.
+# An operator who configured the backend had not configured the destination.
+#
+# Every binary reads PM_REPO as the default for its --repo flag, so the
+# precedence is the same as every other knob here: flag, then variable, then the
+# backend's own cwd inference. Leaving both unset changes nothing.
 #
 # Sourced by every binary instead of naming a provider file directly. Eleven
 # copies of a two-line loader is eleven places to fix a bug in it, and the bug

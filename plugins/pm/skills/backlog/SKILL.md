@@ -186,6 +186,21 @@ A tool in the right-hand column never returns "could not reach the tracker", bec
 tries. That is why an unreachable API is exit `2` and not a silent pass in the left-hand column —
 the two halves fail differently on purpose.
 
+## Where the issues go
+
+`PM_PROVIDER` picks the backend. **`PM_REPO` picks the repository**, and without it the backend
+CLI infers one from the current directory's git remote — so an agent that files a question from
+whatever checkout it was working in publishes it there, not in the inbox the operator
+configured. Deleting an issue afterwards does not unsend the notification.
+
+```sh
+export PM_PROVIDER=gitlab
+export PM_REPO=group/backlog
+```
+
+Flag beats variable beats cwd inference, the same precedence as every other knob here. Leave
+`PM_REPO` unset and nothing changes.
+
 ## Other trackers
 
 The provider is a seam, not an abstraction added later. `lib/provider-github.sh` implements four

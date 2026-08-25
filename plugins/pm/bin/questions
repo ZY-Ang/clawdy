@@ -78,7 +78,7 @@ case "${1:-}" in
   *) echo "questions: unknown command '$1'" >&2; usage 2 ;;
 esac
 
-ALL=0; STALE=""; OLDER=""; REASON=answered; REPO=""; ID=""; TEXT=""
+ALL=0; STALE=""; OLDER=""; REASON=answered; REPO=${PM_REPO:-}; ID=""; TEXT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --all) ALL=1; shift ;;

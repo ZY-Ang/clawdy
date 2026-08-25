@@ -328,6 +328,52 @@ case "$out" in
 esac
 rm -rf "$JQSHIM" 2>/dev/null
 
+# --- PM_REPO: the destination is configurable, like the backend ------------
+# PM_PROVIDER pinned WHICH backend and nothing pinned WHERE. With no --repo the
+# provider omits -R and the backend CLI resolves the project from the current
+# directory's git remote -- so a question filed by an agent landed in whatever
+# repository the shell happened to be standing in. The disk-first design already
+# protected the content; this protects where it is published.
+REPOTMP=${TMPDIR:-/tmp}/seam-repo.$$
+mkdir -p "$REPOTMP/bin"
+. "$HERE/lib/gh-free.sh"
+REPOPATH=$(gh_free_path "$REPOTMP/nogh")
+# A gh that records its argv and answers enough to get through.
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/args"\ncase "$1" in label) exit 0 ;; esac\necho "https://github.com/o/r/issues/42"\n' "$REPOTMP" > "$REPOTMP/bin/gh"
+chmod +x "$REPOTMP/bin/gh"
+rargs() { rm -f "$REPOTMP/args"; ( PATH="$REPOTMP/bin:$REPOPATH"; export PATH; "$@" >/dev/null 2>&1 ); cat "$REPOTMP/args" 2>/dev/null; }
+
+# Configured once, and it reaches the backend.
+out=$(rargs env PM_REPO=owner/configured CLAUDE_QUESTIONS_NO_PERSIST=1 sh "$BIN/file-issue" task "t" --priority low --urgency low --size s)
+case "$out" in *"--repo owner/configured"*) ok "PM_REPO reaches the backend" ;;
+  *) bad "PM_REPO reaches the backend" "argv: $(printf '%s' "$out" | head -1)" ;; esac
+
+# A flag still wins over the variable, same as every other knob here.
+out=$(rargs env PM_REPO=owner/configured CLAUDE_QUESTIONS_NO_PERSIST=1 sh "$BIN/file-issue" task "t" --priority low --urgency low --size s --repo owner/explicit)
+case "$out" in *"--repo owner/explicit"*) ok "--repo overrides PM_REPO" ;;
+  *) bad "--repo overrides PM_REPO" "argv: $(printf '%s' "$out" | head -1)" ;; esac
+
+# Neither set: the cwd fallback is unchanged, so nobody relying on it breaks.
+out=$(rargs env CLAUDE_QUESTIONS_NO_PERSIST=1 sh "$BIN/file-issue" task "t" --priority low --urgency low --size s)
+case "$out" in *--repo*) bad "no PM_REPO means no --repo" "argv: $(printf '%s' "$out" | head -1)" ;;
+  *) ok "with neither set, the cwd fallback is untouched" ;; esac
+
+# ask-async is the one the issue is really about: the async inbox an agent
+# reaches for from whatever repository it happens to be working in.
+out=$(rargs env PM_REPO=owner/configured CLAUDE_QUESTIONS_NO_PERSIST=1 sh "$BIN/ask-async" "q" --blocked-on access --context c --assume a)
+case "$out" in *"--repo owner/configured"*) ok "ask-async honours PM_REPO" ;;
+  *) bad "ask-async honours PM_REPO" "argv: $(printf '%s' "$out" | head -1)" ;; esac
+
+# One binary honouring it is not the fix -- the operator sets it once and every
+# tool must agree, or the inbox is still scattered.
+for b in backlog-queue check-replies backlog-triage; do
+  case "$(grep -c 'REPO=${PM_REPO:-}' "$BIN/$b")" in
+    0) bad "$b reads PM_REPO" "still initialises REPO empty" ;;
+    *) ok "$b reads PM_REPO" ;;
+  esac
+done
+rm -rf "$REPOTMP" 2>/dev/null
+
 # --- every binary must parse as sh --------------------------------------------
 # These scripts embed long jq programs inside SINGLE-quoted strings, so one
 # apostrophe in a comment ends the string and the rest of the file becomes

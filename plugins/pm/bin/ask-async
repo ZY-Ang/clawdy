@@ -44,7 +44,7 @@ case "$1" in -h|--help) usage 0 ;; esac
 
 QUESTION=$1; shift
 BLOCKED=""; IRREV=""
-CONTEXT=""; ASSUME=""; REPO=""; DRY=0
+CONTEXT=""; ASSUME=""; REPO=${PM_REPO:-}; DRY=0
 OPTIONS=""
 
 while [ $# -gt 0 ]; do
