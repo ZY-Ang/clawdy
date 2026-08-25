@@ -213,7 +213,21 @@ sync)
       _v=$(get_field "$f" "$_ax")
       [ -n "$_v" ] && [ "$_v" != "-" ] && set -- "$@" "--$_ax" "$_v"
     done
-    [ -n "$REPO" ] && set -- "$@" --repo "$REPO"
+    # The note already knows where it belongs. persist_question recorded the
+    # origin at ASK time; without this, sync sent the issue wherever the shell
+    # was standing at SYNC time and then stamped the note `filed:` with that
+    # wrong URL, so it could never be re-sent to the right place. An explicit
+    # --repo still wins, because re-homing a note is a real thing to want.
+    _dest=$REPO
+    if [ -z "$_dest" ]; then
+      _url=$(get_field "$f" repo)
+      # owner/name from either remote spelling, keeping any subgroup path.
+      [ -n "$_url" ] && _dest=$(printf '%s' "$_url" \
+        | sed -e 's|\.git$||' -e 's|^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*/||' -e 's|^.*:||')
+      # A local path is not a repository name; leave those to cwd inference.
+      case "$_dest" in /*|.*) _dest="" ;; esac
+    fi
+    [ -n "$_dest" ] && set -- "$@" --repo "$_dest"
         # REFILE bypasses the one-door gate: this note was shaped when it was
     # created, and re-sending it must not be re-litigated.
     if url=$(printf '%s' "$body" | CLAUDE_QUESTIONS_NO_PERSIST=1 CLAUDE_ISSUE_REFILE=1 \
