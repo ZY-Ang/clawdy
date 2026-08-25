@@ -71,6 +71,23 @@ for g in hooks-executable posix-sed test-counts; do
   else bad "$g refuses on an empty tree" "exit $rc: $(printf '%s' "$out" | tail -1)"; fi
 done
 
+# A remote that reports no HEAD branch -- bare, or freshly initialised -- must
+# fall back rather than build the non-ref `origin/(unknown)`. That regression
+# broke stale-branches' own suite and was invisible from this one.
+( cd "$TMP" && git init -q --bare nohead.git
+  git clone -q nohead.git noheadwt && cd noheadwt
+  git config user.email t@t && git config user.name t
+  echo x > f.txt && git add . && git commit -qm base
+  git branch -M main && git push -q -u origin main ) >/dev/null 2>&1
+if [ -f "$HERE/stale-branches" ]; then
+  out=$( cd "$TMP/noheadwt" && sh "$HERE/stale-branches" 2>&1 ); rc=$?
+  case "$out" in
+    *'(unknown)'*) bad "a remote with no HEAD falls back cleanly" "$out" ;;
+    *) [ "$rc" -eq 0 ] && ok "a remote with no HEAD falls back cleanly" \
+         || bad "a remote with no HEAD falls back cleanly" "exit $rc: $out" ;;
+  esac
+fi
+
 # stale-branches must read the default branch rather than guessing `main`. A
 # repo whose default is master got every diff failing and `|| continue`
 # swallowing it — a genuinely stale branch reported as none, exit 0.

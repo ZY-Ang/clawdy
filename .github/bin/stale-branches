@@ -41,8 +41,14 @@ REMOTE=${REMOTE:-origin}
 if [ -z "${BASE:-}" ]; then
   BASE=$(git symbolic-ref --short "refs/remotes/$REMOTE/HEAD" 2>/dev/null) || BASE=""
   # A fresh clone may have no remote HEAD ref; ask the remote itself.
-  [ -n "$BASE" ] || BASE=$(git remote show "$REMOTE" 2>/dev/null \
-    | sed -n 's/^ *HEAD branch: *//p' | head -1 | sed "s|^|$REMOTE/|")
+  if [ -z "$BASE" ]; then
+    _hb=$(git remote show "$REMOTE" 2>/dev/null | sed -n 's/^ *HEAD branch: *//p' | head -1)
+    # A bare or freshly-initialised remote answers "(unknown)". Prepending the
+    # remote name to that produces `origin/(unknown)`, which is not a ref and
+    # was worse than the guess it replaced.
+    case "$_hb" in ''|'(unknown)') _hb="" ;; esac
+    [ -n "$_hb" ] && BASE=$REMOTE/$_hb
+  fi
   [ -n "$BASE" ] || BASE=$REMOTE/main
 fi
 git rev-parse --verify "$BASE" >/dev/null 2>&1 || {
