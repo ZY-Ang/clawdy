@@ -151,6 +151,18 @@ install)
     echo "# written by loop-ctl -- edit PROMPT freely, leave SESSION_ID alone"
     echo "SESSION_ID=$SESSION_ID"
     echo "INTERVAL=$INTERVAL"
+    # The scheduler entry is not the only caller. `doctor` runs a tick straight
+    # from the operator's shell, and that tick is the FIRST one -- it consumes
+    # the bootstrap --session-id and writes the state file. With the workdir
+    # known only to launchd, every scheduled tick afterwards resumed a session
+    # created under a different project directory, and the loop was dead from
+    # the moment the check certified it.
+    printf "WORKDIR='%s'\n" "$(printf '%s' "$WORKDIR" | sed "s/'/'\\\\''/g")"
+    # Pinned for the same reason. The plist gets an absolute path; doctor used
+    # to inherit whatever CLAWDY_LOOP_CLAUDE the operator's shell had -- usually
+    # unset -- and so green-lit `claude` from PATH, which may not be the binary
+    # launchd runs.
+    printf "CLAUDE_BIN='%s'\n" "$(printf '%s' "$CLAUDE_BIN" | sed "s/'/'\\\\''/g")"
     printf "PROMPT='%s'\n" "$(printf '%s' "$PROMPT" | sed "s/'/'\\\\''/g")"
   } > "$CONF"
 

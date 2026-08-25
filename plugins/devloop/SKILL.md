@@ -628,6 +628,12 @@ is a watchdog rather than the heartbeat. Its job is to notice a broken chain and
 independent schedules fail independently; one schedule is a single point of failure with extra
 steps.
 
+**`loop-ctl --dir` is recorded, not just scheduled.** The working directory and the resolved
+`claude` binary both go into the loop's conf, so `loop-run` uses them whoever invokes it. That
+matters because `doctor` runs a tick from *your* shell: before this, that tick consumed the
+bootstrap session in the wrong directory and every scheduled tick afterwards resumed a session
+that did not exist there — a loop dead from the moment the check certified it.
+
 **`loop-ctl` — a local scheduler outside the session.** launchd, cron or systemd, running
 `claude -p --resume` so the conversation is rebuilt from its transcript and no resident process
 is needed. Right when nothing can reach the session from outside. Its caveats are physical:
