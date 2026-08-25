@@ -217,6 +217,72 @@ listed=$(printf '%s' "$out" | grep -cE '^\s+q-[0-9]+' || true)
 id=$(printf '%s' "$out" | grep -oE 'q-[0-9]+' | head -1)
 [ -n "$id" ] && ok "and its id is not empty" || bad "spaced dir empty id" "$out"
 
+# --- sync must use the repo the note recorded ---------------------------------
+# persist_question already writes `- repo: <origin url>` from the cwd at ASK
+# time, and nothing read it back. `sync` with no --repo left REPO empty, so the
+# issue was created wherever the shell was standing at SYNC time -- and the note
+# was then stamped `filed:` with that wrong URL, so it could never be re-sent to
+# the right place. This is the exact scenario sync exists for: an agent that
+# filed offline, or moved on.
+reset; gh_absent
+SYNCA="$TMP/repoA"; rm -rf "$SYNCA"; mkdir -p "$SYNCA"
+( cd "$SYNCA" && git init -q . && git remote add origin https://github.com/acme/repo-A.git ) 2>/dev/null
+( cd "$SYNCA" && CLAUDE_QUESTIONS_DIR="$CLAUDE_QUESTIONS_DIR" PATH="$TMP/bin:$PATH" \
+  sh "$BIN/file-issue" task "Fix the widget" $AX --body b ) >/dev/null 2>&1
+if ingrep '^- repo: https://github.com/acme/repo-A.git$'; then ok "the note records the repo it was filed from"
+else bad "note records repo" "$(grep -h '^- repo' "$CLAUDE_QUESTIONS_DIR"/*/*.md 2>/dev/null | head -1)"; fi
+
+# Sync from a DIFFERENT checkout. The recorded repo must win over the cwd.
+SYNCB="$TMP/repoB"; rm -rf "$SYNCB"; mkdir -p "$SYNCB"
+( cd "$SYNCB" && git init -q . && git remote add origin https://github.com/acme/repo-B.git ) 2>/dev/null
+gh_rec; : > "$GH_ARGS"
+( cd "$SYNCB" && CLAUDE_QUESTIONS_DIR="$CLAUDE_QUESTIONS_DIR" PATH="$TMP/bin:$PATH" \
+  sh "$BIN/questions" sync ) >/dev/null 2>&1
+case "$(cat "$GH_ARGS" 2>/dev/null)" in
+  *"--repo acme/repo-A"*) ok "sync sends it to the recorded repo, not the cwd" ;;
+  *) bad "sync uses the recorded repo" "argv: $(head -1 "$GH_ARGS" 2>/dev/null)" ;;
+esac
+
+# An explicit --repo must still win: the operator may be deliberately re-homing.
+reset; gh_absent
+( cd "$SYNCA" && CLAUDE_QUESTIONS_DIR="$CLAUDE_QUESTIONS_DIR" PATH="$TMP/bin:$PATH" \
+  sh "$BIN/file-issue" task "Fix the widget" $AX --body b ) >/dev/null 2>&1
+gh_rec; : > "$GH_ARGS"
+( cd "$SYNCB" && CLAUDE_QUESTIONS_DIR="$CLAUDE_QUESTIONS_DIR" PATH="$TMP/bin:$PATH" \
+  sh "$BIN/questions" sync --repo owner/explicit ) >/dev/null 2>&1
+case "$(cat "$GH_ARGS" 2>/dev/null)" in
+  *"--repo owner/explicit"*) ok "an explicit --repo still overrides the note" ;;
+  *) bad "--repo overrides the note" "argv: $(head -1 "$GH_ARGS" 2>/dev/null)" ;;
+esac
+
+# A local-path remote is recorded as a path, and a path is not a repository
+# name. Passing it as --repo would make the backend fail on something that
+# looks like a directory; cwd inference is the honest fallback there.
+reset; gh_absent
+SYNCL="$TMP/repoLocal"; rm -rf "$SYNCL"; mkdir -p "$SYNCL"
+( cd "$SYNCL" && git init -q . && git remote add origin "$TMP/some-bare-repo" ) 2>/dev/null
+( cd "$SYNCL" && CLAUDE_QUESTIONS_DIR="$CLAUDE_QUESTIONS_DIR" PATH="$TMP/bin:$PATH" \
+  sh "$BIN/file-issue" task "Local remote" $AX --body b ) >/dev/null 2>&1
+gh_rec; : > "$GH_ARGS"
+( cd "$SYNCB" && CLAUDE_QUESTIONS_DIR="$CLAUDE_QUESTIONS_DIR" PATH="$TMP/bin:$PATH" \
+  sh "$BIN/questions" sync ) >/dev/null 2>&1
+case "$(cat "$GH_ARGS" 2>/dev/null)" in
+  *--repo\ /*) bad "a filesystem path must not be passed as --repo" "argv: $(head -1 "$GH_ARGS" 2>/dev/null)" ;;
+  *) ok "a local-path remote is not passed as a repository name" ;;
+esac
+
+# A note with no recorded repo keeps today's behaviour: no --repo, cwd decides.
+reset; gh_absent
+( cd "$TMP" && CLAUDE_QUESTIONS_DIR="$CLAUDE_QUESTIONS_DIR" PATH="$TMP/bin:$PATH" \
+  sh "$BIN/file-issue" task "No remote here" $AX --body b ) >/dev/null 2>&1
+gh_rec; : > "$GH_ARGS"
+( cd "$SYNCB" && CLAUDE_QUESTIONS_DIR="$CLAUDE_QUESTIONS_DIR" PATH="$TMP/bin:$PATH" \
+  sh "$BIN/questions" sync ) >/dev/null 2>&1
+case "$(cat "$GH_ARGS" 2>/dev/null)" in
+  *--repo*) bad "a note with no repo must not gain one" "argv: $(head -1 "$GH_ARGS" 2>/dev/null)" ;;
+  *) ok "a note with no recorded repo is unchanged" ;;
+esac
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)

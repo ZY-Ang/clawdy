@@ -198,6 +198,13 @@ the two halves fail differently on purpose.
 
 ## Where the issues go
 
+**A note remembers where it came from.** `persist_question` records the origin at the moment
+the question is asked, and `sync` uses it — so a question filed offline in one checkout is sent
+to *that* repository later, not to wherever the shell happens to be standing when someone runs
+`sync`. That is the whole scenario `sync` exists for. An explicit `--repo` still wins, because
+deliberately re-homing a note is a real thing to want.
+
+
 `PM_PROVIDER` picks the backend. **`PM_REPO` picks the repository**, and without it the backend
 CLI infers one from the current directory's git remote — so an agent that files a question from
 whatever checkout it was working in publishes it there, not in the inbox the operator
