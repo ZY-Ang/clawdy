@@ -184,6 +184,58 @@ done
 if grep -q "label create priority-high" "$TMP/gh-args" 2>/dev/null; then ok "and priority-high is created first"
 else bad "creates the axis label" "$(cat "$TMP/gh-args" 2>/dev/null)"; fi
 
+# --- plan mode is the design phase, not an interruption ----------------------
+# The hook's message says "once work has started", but it does not detect work
+# at all: it is deny-by-default, allowing only an explicit env var or a
+# per-session interview window. Nothing opens a window automatically, so the
+# FIRST AskUserQuestion of any fresh session was blocked -- including in plan
+# mode, where no edit can land and the plan harness itself asks questions to
+# settle requirements before any work exists.
+deny() { printf '%s' "$1" | sh "$HERE/../hooks/deny-interrupt" >/dev/null 2>&1; echo $?; }
+
+[ "$(deny '{"session_id":"s1","tool_name":"AskUserQuestion"}')" -eq 2 ] \
+  && ok "a fresh session with no window is still blocked" || bad "default still blocked"
+
+# Both spellings, because the hook-development docs say permission_mode and
+# live session state says permissionMode -- and a fix reading the wrong key
+# would silently do nothing, which is the failure mode being fixed.
+[ "$(deny '{"session_id":"s1","tool_name":"AskUserQuestion","permission_mode":"plan"}')" -eq 0 ] \
+  && ok "plan mode is allowed (snake_case key)" || bad "plan allowed, snake_case"
+[ "$(deny '{"session_id":"s1","tool_name":"AskUserQuestion","permissionMode":"plan"}')" -eq 0 ] \
+  && ok "plan mode is allowed (camelCase key)" || bad "plan allowed, camelCase"
+
+# Every mode where a change CAN land must still be blocked -- that is the bug
+# the guard exists for: agent mid-change, unsure, reaches for the tool.
+for m in default acceptEdits auto ask allow bypassPermissions; do
+  [ "$(deny "{\"session_id\":\"s1\",\"tool_name\":\"AskUserQuestion\",\"permission_mode\":\"$m\"}")" -eq 2 ] \
+    && ok "$m is still blocked" || bad "$m still blocked"
+done
+
+# Both code paths, separately. jq is the primary and sed the fallback, and with
+# both present no single mutation to either can fail -- so each is exercised on
+# its own, or the redundancy hides a broken half.
+. "$HERE/lib/gh-free.sh" 2>/dev/null || true
+NOJQ="$TMP/nojq"; mkdir -p "$NOJQ"
+for b in sh sed head printf cat find rm date grep; do
+  p=$(command -v "$b" 2>/dev/null) && ln -sf "$p" "$NOJQ/$b" 2>/dev/null
+done
+denynojq() { printf '%s' "$1" | PATH="$NOJQ" sh "$HERE/../hooks/deny-interrupt" >/dev/null 2>&1; echo $?; }
+[ "$(denynojq '{"session_id":"s1","tool_name":"AskUserQuestion","permission_mode":"plan"}')" -eq 0 ] \
+  && ok "the sed fallback reads snake_case with no jq" || bad "sed path, snake_case"
+[ "$(denynojq '{"session_id":"s1","tool_name":"AskUserQuestion","permissionMode":"plan"}')" -eq 0 ] \
+  && ok "the sed fallback reads camelCase with no jq" || bad "sed path, camelCase"
+[ "$(denynojq '{"session_id":"s1","tool_name":"AskUserQuestion","permission_mode":"auto"}')" -eq 2 ] \
+  && ok "and the sed fallback still blocks other modes" || bad "sed path, auto blocked"
+
+# A value that merely CONTAINS plan must not slip through.
+[ "$(deny '{"session_id":"s1","tool_name":"AskUserQuestion","permission_mode":"planning-ish"}')" -eq 2 ] \
+  && ok "a mode that merely contains 'plan' is blocked" || bad "substring match leaked"
+
+# No session id and plan mode: the fail-closed rule is about WHOSE window, and
+# plan mode needs no window, so it is allowed.
+[ "$(deny '{"tool_name":"AskUserQuestion","permission_mode":"plan"}')" -eq 0 ] \
+  && ok "plan mode needs no session id" || bad "plan without a session id"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)

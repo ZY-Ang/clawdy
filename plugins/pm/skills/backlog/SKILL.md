@@ -129,6 +129,16 @@ queue with no record of why it was dropped.
 **The branch and its draft PR are left alone.** Work already pushed is evidence, and deleting it
 to tidy up a label loses the only record of what was tried.
 
+## Asking, and the one place it is allowed
+
+The `deny-interrupt` hook blocks `AskUserQuestion` because it stops the turn with no timeout
+and loses the question if the session ends. **Plan mode is the exception**, by construction: no
+edit can land while it is active, so there is no work in progress to interrupt, and the plan
+harness itself asks questions to settle requirements before any work exists.
+
+Everywhere a change *can* land — `default`, `acceptEdits`, `auto` — it still blocks, and
+`ask-async` is the answer there.
+
 ## Labels
 
 Five axes. The first three decide order; `size` is a late tie-break; `area-*` is for batching.
