@@ -14,6 +14,16 @@
 #   sh .github/bin/hooks-executable
 set -u
 fail=0
+checked=0
+
+# Anchored to the repository this script SHIPS IN, not the caller's directory
+# and not `git rev-parse` -- which would resolve to whichever repo the caller
+# happened to be standing in. All of these globbed `plugins/*/...` relative to
+# cwd, so running one from anywhere else printed its success line having
+# examined zero files: the exact failure these guards exist to catch, in the
+# guards themselves.
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)" || exit 2
+
 for cfg in plugins/*/hooks/hooks.json; do
   [ -f "$cfg" ] || continue
   plugin=$(dirname "$(dirname "$cfg")")
@@ -25,12 +35,17 @@ for cfg in plugins/*/hooks/hooks.json; do
     fi
     mode=$(git ls-files -s -- "$f" | awk '{print $1}')
     case "$mode" in
-      100755) ;;
+      100755) checked=$((checked + 1)) ;;
       "") echo "hooks-executable: $f is not tracked by git"; fail=1 ;;
       *) echo "hooks-executable: $f is committed $mode, so it can never run."
          echo "                  fix with: git update-index --chmod=+x $f"; fail=1 ;;
     esac
   done
 done
-[ "$fail" -eq 0 ] && echo "hooks-executable: every hook named in a hooks.json is executable"
+# A run that examined nothing is not a pass. Before this was anchored, calling
+# it from another directory printed the success line having found no hooks.
+[ "$checked" -eq 0 ] && [ "$fail" -eq 0 ] && {
+  echo "hooks-executable: found no hooks to check — that is a broken run, not a clean one"
+  exit 2; }
+[ "$fail" -eq 0 ] && echo "hooks-executable: $checked hook(s) named in a hooks.json, all executable"
 exit $fail

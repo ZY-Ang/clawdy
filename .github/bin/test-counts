@@ -16,9 +16,20 @@
 set -u
 fail=0
 skipped=""
+seen=0
+
+# Anchored to the repository this script SHIPS IN, not the caller's directory
+# and not `git rev-parse` -- which would resolve to whichever repo the caller
+# happened to be standing in. All of these globbed `plugins/*/...` relative to
+# cwd, so running one from anywhere else printed its success line having
+# examined zero files: the exact failure these guards exist to catch, in the
+# guards themselves.
+cd "$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)" || exit 2
+
 for t in plugins/*/tests/*.test.sh .github/bin/*.test.sh; do
   [ -f "$t" ] || continue
   case "$t" in */test-counts.test.sh) continue ;; esac
+  seen=$((seen + 1))
   out=$(sh "$t" 2>&1) || :
   printed=$(printf '%s\n' "$out" | grep -c '^ok  \|^FAIL ') || printed=0
   # "N passed" | "N of M failed" | "N ran, M failed"
@@ -42,5 +53,7 @@ for t in plugins/*/tests/*.test.sh .github/bin/*.test.sh; do
   fi
 done
 [ -n "$skipped" ] && echo "test-counts: skipped (printed no assertions):$skipped"
-[ "$fail" -eq 0 ] && echo "test-counts: every suite's total matches what it printed"
+[ "$seen" -eq 0 ] && [ "$fail" -eq 0 ] && {
+  echo "test-counts: found no suites to check — that is a broken run, not a clean one"; exit 2; }
+[ "$fail" -eq 0 ] && echo "test-counts: $seen suite(s) checked, every total matches what it printed"
 exit $fail
