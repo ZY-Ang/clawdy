@@ -50,7 +50,7 @@ are needed by the tools that use them; implement what you use.
 | `provider_issue_labels <n> <repo>` | names, one per line | `reply-issue` |
 | `provider_close_issue <n> <reason> <repo>` | — | `reply-issue` |
 | `provider_ensure_label <label> <repo>` | always `0` | `file-issue` `ask-async` |
-| `provider_supports_deps` | `0` if a dependency graph exists | `backlog-queue` |
+| `provider_supports_deps <repo>` | `0` if **that repo** exposes a dependency graph | `backlog-queue` |
 | `provider_is_triaged <issue-json>` | `0` triaged · `1` not · **`2` cannot tell** | ordering |
 | `provider_blocked_by <n> <repo>` | blocker numbers | `backlog-link` |
 | `provider_issue_id <n> <repo>` | the backend's own id | `backlog-link` |
@@ -96,6 +96,11 @@ queue was broken on its own documented form for two releases (#33, #41).
 **An unreachable backend is never a pass.** `0` ready · `1` not ready · `2` could not tell.
 Never collapse "I could not ask" into "there is nothing". Read the status **unpiped** —
 after a pipe `$?` is the last stage's, and POSIX `sh` has no `PIPESTATUS` (#39).
+
+**Probe the repository you are about to read, not the one you are standing in.** The probe
+takes `<repo>` for the same reason every other read function does: a failure against the
+ambient repo silently drops `blockedBy` from a listing of a different one, and the queue then
+ranks with a uniformly-zero dependents term while printing a confident order. Nothing errors.
 
 **Degrade, do not fail.** `provider_supports_deps` is the pattern: probe once, and if the
 backend has no dependency graph, produce an order without the dependents term rather than
