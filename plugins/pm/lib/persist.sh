@@ -50,6 +50,14 @@ persist_question() {
   _d=$(q_dir)
   mkdir -p "$_d" 2>/dev/null || { echo "persist: cannot create $_d" >&2; return 1; }
 
+  # Every agent without a session id shares the `unsessioned` directory, so the
+  # reminder hook shows each of them the others' questions as its own and sync
+  # re-files all of them. interview-window hit the same fork and refused -- right
+  # for a window, wrong here, because refusing destroys the content persistence
+  # exists to protect. So it writes, and says the note is unscoped.
+  [ "$(q_session)" = "unsessioned" ] && \
+    echo "persist: no session id, so this note is unscoped and shared with every other unsessioned agent" >&2
+
   _id=$(q_newid)
   _f="$_d/$(date -u +%Y-%m-%d)-$(slugify "$_title")-$_id.md"
   {

@@ -1,7 +1,7 @@
 {
   "name": "statusline",
   "description": "Statusline showing model, context use and token counts — with cost shown on Bedrock and DeepSeek, where you are actually billed per token.",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "author": {
     "name": "ZY-Ang"
   },
