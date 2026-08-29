@@ -117,6 +117,29 @@ case "$BRANCH" in
   *' '*|*'..'*|*'~'*|*'^'*|*':'*) echo "backlog-claim: '$BRANCH' is not a usable branch name" >&2; exit 2 ;;
 esac
 
+# --repo routed every TRACKER call and nothing routed the CODE: the push below
+# is `git push -u origin`, so the branch went to the cwd's origin while the
+# draft PR was filed against --repo. Two repositories in one command, and the
+# PR then names a --head that does not exist in the one it was filed against.
+#
+# This is not a routing problem to solve with another flag. backlog-claim needs
+# a local checkout to push from, so a --repo naming a DIFFERENT repository is a
+# contradiction. Refuse, before writing anything anywhere.
+if [ -n "$REPO" ]; then
+  _url=$(git config --get remote.origin.url 2>/dev/null || true)
+  # owner/name from either spelling, keeping any subgroup path:
+  #   https://host/group/sub/proj.git   git@host:group/sub/proj.git
+  _here=$(printf '%s' "$_url" \
+    | sed -e 's|\.git$||' -e 's|^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*/||' -e 's|^.*:||')
+  if [ -n "$_here" ] && [ "$_here" != "$REPO" ]; then
+    echo "backlog-claim: --repo is '$REPO' but this checkout pushes to '$_here'" >&2
+    echo "               the branch would land in one repository and the pull" >&2
+    echo "               request in the other. Run this from a checkout of" >&2
+    echo "               '$REPO', or drop --repo." >&2
+    exit 2
+  fi
+fi
+
 [ -n "$BASE" ] || BASE=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||') || true
 [ -n "$BASE" ] || BASE=main
 
