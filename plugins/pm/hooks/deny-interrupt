@@ -39,6 +39,36 @@ if [ -n "$INPUT" ]; then
     | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
 fi
 
+# Plan mode is the design phase BY CONSTRUCTION: no edit can land while it is
+# active, and the plan harness itself asks questions to settle requirements
+# before any work exists. The message said "once work has started", but the
+# check never detected work -- it was deny-by-default, and nothing opens a
+# window automatically, so the FIRST question of any fresh session was blocked.
+#
+# This cannot reopen the bug the guard exists for. "Agent mid-change, unsure,
+# reaches for the tool" always runs in default / acceptEdits / auto -- never in
+# plan, where there is no change to be mid-way through. And it adds no state: no
+# auto-opened window to be left on, which is the failure the window design
+# deliberately avoids.
+#
+# BOTH SPELLINGS. The hook-development docs give `permission_mode`; live session
+# state uses `permissionMode`. Reading one and guessing wrong fails silently --
+# the hook would keep blocking and look correct -- so it reads either.
+MODE=""
+if [ -n "$INPUT" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    MODE=$(printf '%s' "$INPUT" | jq -r '.permission_mode // .permissionMode // empty' 2>/dev/null || true)
+  fi
+  # Two plain expressions, not one with `?`: that is a GNU extension and POSIX
+  # sed reads it as a literal, so `"permission_?mode"` matches nothing at all.
+  [ -z "$MODE" ] && MODE=$(printf '%s' "$INPUT" \
+    | sed -n 's/.*"permissionMode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+  [ -z "$MODE" ] && MODE=$(printf '%s' "$INPUT" \
+    | sed -n 's/.*"permission_mode"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+fi
+# Exact match: a mode merely containing "plan" is not plan mode.
+[ "$MODE" = "plan" ] && exit 0
+
 # Fail closed. Without a session id there is no way to tell whose window an open
 # one belongs to, and treating "cannot tell" as "allowed" is exactly the bug
 # that per-session scoping exists to fix.
