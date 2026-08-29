@@ -1,7 +1,7 @@
 {
   "name": "pm",
   "description": "Project management for an unattended loop: file work and ask questions without blocking, then order what comes back — a deterministic queue by severity, priority and how much each item unblocks, so a class fix stops losing to its own instances.",
-  "version": "0.26.0",
+  "version": "0.26.2",
   "author": {
     "name": "ZY-Ang"
   },
