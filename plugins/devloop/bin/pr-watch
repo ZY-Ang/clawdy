@@ -28,6 +28,11 @@
 #   view [<id>]   one pull request as JSON, on stdout. No id means "the one for
 #                 the current branch". The shape is FIELDS below.
 #   list          the ids of your open pull requests, one per line. --all only.
+# WHICH REPOSITORY reaches a provider through PR_WATCH_REPO in its environment,
+# not as an argument. Adding one would change the arity of every verb an
+# existing provider already implements; an environment variable is ignored by
+# the ones that do not read it and available to the ones that do.
+#
 #   mark          OPTIONAL: the glyph that references a code-review item on this
 #                 backend -- "#" on GitHub, "!" on GitLab, where "#123" names
 #                 an ISSUE instead. Anything but a single character is ignored
@@ -80,9 +85,18 @@ set -eu
 
 FIELDS='number,title,isDraft,state,mergeable,mergeStateStatus,reviewDecision,statusCheckRollup'
 
+# Which repository, not just which backend. Three seams selected the backend and
+# none said where: `gh pr list --author @me` and `gh pr view` carried no --repo,
+# so it came from the cwd's git remote. Run from the wrong directory, --all
+# printed READY TO MERGE for somebody else's pull requests -- and exit 0 is the
+# documented "you may press merge" signal.
+REPO=${PR_WATCH_REPO:-}
 PR=""; WAIT=0; ALL=0
+_want_repo=0
 for a in "$@"; do
+  if [ "$_want_repo" -eq 1 ]; then REPO=$a; _want_repo=0; continue; fi
   case "$a" in
+    --repo) _want_repo=1 ;;
     --wait) WAIT=1 ;;
     --all)  ALL=1 ;;
     -h|--help) sed -n '2,/^# Requires:/p' "$0"; exit 0 ;;
@@ -99,6 +113,8 @@ if [ "$ALL" -eq 1 ] && [ "$WAIT" -eq 1 ]; then
   echo "pr-watch: --all and --wait cannot be combined; --wait needs one pull request"
   exit 2
 fi
+
+[ -n "$REPO" ] && export PR_WATCH_REPO="$REPO"
 
 command -v jq >/dev/null || { echo "pr-watch: jq is not installed"; exit 2; }
 # Both seams below stand in for gh, so only demand gh when we will really call it.
@@ -151,8 +167,9 @@ fetch() {
     else "$PR_WATCH_PROVIDER" view </dev/null; fi
     return $?
   fi
-  if [ -n "$1" ]; then gh pr view "$1" --json "$FIELDS" 2>/dev/null
-  else gh pr view --json "$FIELDS" 2>/dev/null; fi
+  # shellcheck disable=SC2086
+  if [ -n "$1" ]; then gh pr view "$1" ${REPO:+--repo "$REPO"} --json "$FIELDS" 2>/dev/null
+  else gh pr view ${REPO:+--repo "$REPO"} --json "$FIELDS" 2>/dev/null; fi
 }
 
 # Poll view until no check is still running, for providers that do not implement
@@ -309,7 +326,8 @@ if [ "$ALL" -eq 1 ]; then
   elif [ -n "${PR_WATCH_PROVIDER:-}" ]; then
     nums=$("$PR_WATCH_PROVIDER" list 2>/dev/null </dev/null)
   else
-    nums=$(gh pr list --author "@me" --state open --json number -q '.[].number' 2>/dev/null)
+    # shellcheck disable=SC2086
+    nums=$(gh pr list --author "@me" --state open ${REPO:+--repo "$REPO"} --json number -q '.[].number' 2>/dev/null)
   fi || { echo "pr-watch: could not list pull requests"; exit 2; }
   # An empty list is genuinely the same as "no open pull requests" -- but so is
   # a provider whose `case` has no default arm. One exec on an already-idle path
@@ -357,8 +375,9 @@ if [ "$WAIT" -eq 1 ] && [ -z "${PR_WATCH_JSON:-}" ]; then
     [ "$wrc" -ne 0 ] && settle "$PR"
   # gh already implements the waiting. Its exit status is informational here --
   # the verdict below decides, not this call.
-  elif [ -n "$PR" ]; then gh pr checks "$PR" --watch >/dev/null 2>&1 || true
-  else gh pr checks --watch >/dev/null 2>&1 || true; fi
+  # shellcheck disable=SC2086
+  elif [ -n "$PR" ]; then gh pr checks "$PR" ${REPO:+--repo "$REPO"} --watch >/dev/null 2>&1 || true
+  else gh pr checks ${REPO:+--repo "$REPO"} --watch >/dev/null 2>&1 || true; fi
 fi
 
 J=$(fetch "$PR") || J=""

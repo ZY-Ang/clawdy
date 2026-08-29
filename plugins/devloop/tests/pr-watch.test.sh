@@ -520,6 +520,73 @@ case "$out" in
   *) fails=$((fails + 1)); printf 'FAIL %-22s out: %s\n' all-wait-message "$out" ;;
 esac
 
+# --- which repository -------------------------------------------------------
+# Three seams selected the BACKEND and none said WHERE. `gh pr list --author
+# @me` and `gh pr view` both carried no --repo, so the repo came from the cwd's
+# git remote and the bare PR from the cwd's HEAD branch. Run from the wrong
+# directory, --all printed READY TO MERGE for somebody else's pull requests --
+# and exit 0 is documented as the "you may press merge" signal.
+ran=$((ran + 1))
+mkdir -p "$TMP/bin"
+: > "$TMP/gh.log"
+cat > "$TMP/bin/gh" <<GHF
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TMP/gh.log"
+case "\$2" in
+  list) printf '42\\n' ;;
+  *)    cat "$TMP/clean-approved.json" ;;
+esac
+GHF
+chmod +x "$TMP/bin/gh"
+PATH="$TMP/bin:$PATH" PR_WATCH_REPO=owner/target sh "$BIN" 42 >/dev/null 2>&1
+if grep -q -- '--repo owner/target' "$TMP/gh.log"
+then printf 'ok   %-22s reaches gh\n' repo-env
+else fails=$((fails + 1)); printf 'FAIL %-22s log: %s\n' repo-env "$(head -1 "$TMP/gh.log")"; fi
+
+ran=$((ran + 1))
+: > "$TMP/gh.log"
+PATH="$TMP/bin:$PATH" PR_WATCH_REPO=owner/target sh "$BIN" --repo owner/flag 42 >/dev/null 2>&1
+if grep -q -- '--repo owner/flag' "$TMP/gh.log"
+then printf 'ok   %-22s the flag wins\n' repo-flag
+else fails=$((fails + 1)); printf 'FAIL %-22s log: %s\n' repo-flag "$(head -1 "$TMP/gh.log")"; fi
+
+# --all is the loop tick's first step, so it is the one that must not sweep the
+# wrong repository.
+ran=$((ran + 1))
+: > "$TMP/gh.log"
+PATH="$TMP/bin:$PATH" PR_WATCH_REPO=owner/target sh "$BIN" --all >/dev/null 2>&1
+if [ "$(grep -c -- '--repo owner/target' "$TMP/gh.log")" -ge 2 ]
+then printf 'ok   %-22s list and view both carry it\n' repo-all
+else fails=$((fails + 1)); printf 'FAIL %-22s log: %s\n' repo-all "$(tr '\n' ';' < "$TMP/gh.log")"; fi
+
+# Unset, nothing changes: cwd inference is the documented fallback.
+ran=$((ran + 1))
+: > "$TMP/gh.log"
+PATH="$TMP/bin:$PATH" sh "$BIN" 42 >/dev/null 2>&1
+if grep -q -- '--repo' "$TMP/gh.log"
+then fails=$((fails + 1)); printf 'FAIL %-22s gained a --repo\n' repo-unset
+else printf 'ok   %-22s cwd inference untouched\n' repo-unset; fi
+
+# The PROVIDER needs it too, and adding an argument would change the arity of
+# every verb an existing provider already implements. It arrives in the
+# environment instead: old providers ignore it, new ones read it.
+ran=$((ran + 1))
+: > "$TMP/prov.log"
+cat > "$TMP/repoprov" <<RP
+#!/bin/sh
+printf '%s repo=%s\n' "\$*" "\${PR_WATCH_REPO:-none}" >> "$TMP/prov.log"
+case "\$1" in view) cat "$TMP/clean-approved.json" ;; *) exit 2 ;; esac
+RP
+chmod +x "$TMP/repoprov"
+# PR_WATCH_REPO deliberately UNSET here: passed by flag, so the only way the
+# provider can see it is pr-watch exporting it. Setting it in this shell would
+# let the provider inherit it and the case would pass without the fix.
+( unset PR_WATCH_REPO
+  PR_WATCH_PROVIDER="$TMP/repoprov" sh "$BIN" --repo owner/target 42 >/dev/null 2>&1 )
+if grep -q 'repo=owner/target' "$TMP/prov.log"
+then printf 'ok   %-22s the provider is told too\n' repo-provider
+else fails=$((fails + 1)); printf 'FAIL %-22s log: %s\n' repo-provider "$(head -1 "$TMP/prov.log")"; fi
+
 # --- argument handling ------------------------------------------------------
 ran=$((ran + 1))
 sh "$BIN" --nonsense >/dev/null 2>&1

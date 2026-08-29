@@ -33,6 +33,21 @@ pass. Exit `0` prints which of two situations you are in:
 - **READY FOR REVIEW** — everything you control is green; the only thing left is a human.
   This is the one moment asking for review is correct.
 
+### Which repository
+
+`pr-watch` reads `PR_WATCH_REPO`, or takes `--repo owner/name`. Without either, the repository
+comes from the current directory's git remote — so a loop whose working directory drifted
+reported `READY TO MERGE` for somebody else's pull requests, and exit `0` is the documented
+"you may press merge" signal.
+
+```bash
+PR_WATCH_REPO=owner/name  pr-watch --all
+```
+
+A provider is told through `PR_WATCH_REPO` in its **environment**, not as an argument — adding
+one would change the arity of every verb an existing provider already implements. Providers
+that do not read it are unaffected.
+
 ### On a host that is not GitHub
 
 The verdict logic is host-agnostic; only the fetch is not. Point `pr-watch` at your own
