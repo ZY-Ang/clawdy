@@ -224,6 +224,37 @@ export PM_REPO=group/backlog
 Flag beats variable beats cwd inference, the same precedence as every other knob here. Leave
 `PM_REPO` unset and nothing changes.
 
+## Whose lane it is
+
+Ordering answers *what is most important*. With several agents on one tracker it does not
+answer *whose lane this is* — so any agent can claim work another filed for a different
+stream, and the `claimed` label then makes that grab look legitimate to everyone else.
+
+```sh
+export PM_AGENT=backlog-worker      # label form: agent-backlog-worker
+```
+
+**Unset is today's behaviour exactly** — nothing filters, nothing refuses. That is what makes
+it safe to turn on while other agents are mid-flight.
+
+| Set | Effect |
+| --- | --- |
+| `file-issue`, `ask-async` | stamp `agent-<name>` on what they file, and on the note so `questions sync` replays it |
+| `backlog-queue` | drops items labelled for a *different* agent; `--all` restores the operator view |
+| `backlog-claim` | **refuses** an item labelled for a different agent, exit 1 |
+
+The refusal lives in `backlog-claim` and not only in the queue. A filter alone is routed
+around by claiming the number directly, which is the case that matters — the queue is advice,
+the claim is what writes.
+
+**Lenient on purpose.** An agent may claim its own items and any item carrying no `agent-*`
+label at all. Only a label naming a *different* agent refuses. Strict own-only would strand
+every legacy issue and everything a human filed by hand, which is most of a real backlog.
+
+Identity is explicit because there is nothing stable to derive it from: the harness session
+name is not in the process environment, only a mutable UUID is. Precedence is the same as
+every other knob here — `--agent` beats `PM_AGENT` beats unset.
+
 ## Other trackers
 
 The provider is a seam, not an abstraction added later. `lib/provider-github.sh` implements four

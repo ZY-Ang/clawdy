@@ -209,7 +209,7 @@ sync)
     # same as one that reached the tracker first time. Notes written before the
     # axes existed simply have none, and REFILE lets those through unaxed rather
     # than stranding them.
-    for _ax in priority urgency size severity area; do
+    for _ax in priority urgency size severity area agent; do
       _v=$(get_field "$f" "$_ax")
       [ -n "$_v" ] && [ "$_v" != "-" ] && set -- "$@" "--$_ax" "$_v"
     done

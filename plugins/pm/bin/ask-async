@@ -32,6 +32,7 @@ set -eu
 LIB=$(CDPATH= cd -- "$(dirname -- "$0")/../lib" && pwd)
 . "$LIB/agent-prefix.sh"
 . "$LIB/persist.sh"
+. "$LIB/agent-scope.sh"
 . "$LIB/shape.sh"
 PM_LIB=$LIB
 . "$PM_LIB/load-provider.sh"
@@ -44,7 +45,7 @@ case "$1" in -h|--help) usage 0 ;; esac
 
 QUESTION=$1; shift
 BLOCKED=""; IRREV=""
-CONTEXT=""; ASSUME=""; REPO=${PM_REPO:-}; DRY=0
+CONTEXT=""; ASSUME=""; REPO=${PM_REPO:-}; DRY=0; AGENT_OVERRIDE=""
 OPTIONS=""
 
 while [ $# -gt 0 ]; do
@@ -139,6 +140,12 @@ Tick a box or reply — that is all you need to do. Whoever picks this up remove
 \`needs-human\` label if it is still worth tracking as work, or closes it if it is not."
 
 BODY=$(agent_prefix "$BODY")
+AGENT_LABEL=$(agent_label)
+if [ -n "$AGENT_LABEL" ] && ! agent_name_ok "$(agent_name)"; then
+  echo "ask-async: agent name is not usable as a label -- letters, digits," >&2
+  echo "           dot, underscore and hyphen only" >&2
+  exit 2
+fi
 set -- --title "$QUESTION" --label "needs-human" --label "question" --body "$BODY"
 [ -n "$REPO" ] && set -- "$@" --repo "$REPO"
 
@@ -148,7 +155,7 @@ if [ "$DRY" -eq 1 ]; then
   exit 0
 fi
 
-for l in needs-human question; do
+for l in needs-human question ${AGENT_LABEL}; do
   provider_ensure_label "$l" "$REPO"
 done
 
@@ -167,7 +174,8 @@ fallback() {
 }
 
 provider_available || fallback "$(provider_name) is not available"
-URL=$(printf '%s' "$BODY" | provider_create_issue "$REPO" "$QUESTION" needs-human question) || {
+# shellcheck disable=SC2086
+URL=$(printf '%s' "$BODY" | provider_create_issue "$REPO" "$QUESTION" needs-human question ${AGENT_LABEL}) || {
   [ -n "${PROVIDER_ERR:-}" ] && printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
   fallback "$(provider_name) rejected the question"
 }
