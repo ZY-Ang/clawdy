@@ -184,6 +184,61 @@ for b in backlog-claim backlog-release; do
   [ "$(rc_of $b --help)" -eq 0 ] && ok "$b --help -> 0" || bad "$b --help"
 done
 
+# --- --repo must match the checkout it pushes from ---------------------------
+# `--repo` routed every tracker call and nothing routed the CODE. The push was
+# `git push -q -u origin`, so the branch went to the cwd's origin while the
+# draft PR was filed against --repo -- two different repositories in one
+# command, and the PR then names a --head that does not exist there.
+#
+# backlog-claim inherently needs a local checkout to push from, so naming a
+# different repo is a contradiction rather than a routing problem. It refuses.
+mkrepo; issue "$OPEN"
+out=$(claim 42 --repo someone/else)
+# Assert it names BOTH repositories: an operator seeing only one cannot tell
+# which end is wrong.
+case "$out" in
+  *"--repo is 'someone/else'"*"this checkout pushes to"*)
+    ok "a --repo that is not this checkout is refused, naming both" ;;
+  *) bad "mismatched --repo refused" "$out" ;;
+esac
+[ "$(rc_of backlog-claim 42 --repo someone/else)" -eq 2 ] \
+  && ok "and exits 2, not a half-done claim" || bad "mismatch exit code"
+
+# Nothing may be written on the way to refusing: no branch, no commit, no push.
+mkrepo; issue "$OPEN"
+claim 42 --repo someone/else >/dev/null 2>&1
+pushed=$( cd "$TMP/up" && git for-each-ref --format='%(refname:short)' refs/heads | grep -c claude/ || true )
+[ "$pushed" -eq 0 ] && ok "and pushes nothing to the ambient origin" \
+  || bad "branch reached the wrong origin" "$pushed branch(es)"
+: > "$CALLS"; claim 42 --repo someone/else >/dev/null 2>&1
+[ ! -s "$CALLS" ] && ok "and makes no tracker call either" || bad "tracker called before refusing" "$(head -1 "$CALLS")"
+
+# The matching case must still work, however the remote URL is spelled.
+mkrepo; issue "$OPEN"
+( cd "$TMP/wt" && git remote set-url origin "https://github.com/owner/name.git" ) 2>/dev/null
+out=$(claim 42 --repo owner/name)
+case "$out" in *"this checkout pushes to"*) bad "a matching --repo was refused" "$out" ;;
+  *) ok "an https remote matching --repo is accepted" ;; esac
+
+mkrepo; issue "$OPEN"
+( cd "$TMP/wt" && git remote set-url origin "git@github.com:owner/name.git" ) 2>/dev/null
+out=$(claim 42 --repo owner/name)
+case "$out" in *"this checkout pushes to"*) bad "an ssh remote matching --repo was refused" "$out" ;;
+  *) ok "an ssh remote matching --repo is accepted" ;; esac
+
+# A subgroup path is the shape that breaks a naive basename comparison.
+mkrepo; issue "$OPEN"
+( cd "$TMP/wt" && git remote set-url origin "https://gitlab.com/group/sub/proj.git" ) 2>/dev/null
+out=$(claim 42 --repo group/sub/proj)
+case "$out" in *"this checkout pushes to"*) bad "a subgroup path matching --repo was refused" "$out" ;;
+  *) ok "a nested group path matching --repo is accepted" ;; esac
+
+# And with no --repo at all, nothing changes for anyone relying on today's behaviour.
+mkrepo; issue "$OPEN"
+out=$(claim 42)
+case "$out" in *"this checkout pushes to"*) bad "no --repo must not be refused" "$out" ;;
+  *) ok "with no --repo the cwd remains the destination" ;; esac
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)

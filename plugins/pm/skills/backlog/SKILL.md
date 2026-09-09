@@ -108,6 +108,12 @@ branches.
 The order of operations is deliberate: **PR before label.** If the label lands and the PR does
 not, the queue hides an issue that nothing is actually working on.
 
+**`--repo` must name the repository you are standing in.** The claim pushes a branch, and
+`git push` goes to this checkout's `origin` — so a `--repo` naming somewhere else would put the
+branch in one repository and the pull request in the other, with the PR referring to a `--head`
+that does not exist there. It refuses before writing anything, rather than routing the two
+halves separately.
+
 `backlog-claim` is **idempotent**. Claiming twice reports the existing claim and exits `0` — it
 creates no second branch, PR or comment. A loop re-reading its own queue *will* re-claim, and
 failing there would train it to ignore the exit code.
