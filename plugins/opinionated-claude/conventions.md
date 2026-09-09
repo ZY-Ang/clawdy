@@ -84,10 +84,10 @@ that still means something tomorrow, to someone who was not here.
 "But I really cannot continue without an answer" is not an exception — it is the case for
 filing and then stopping, which is a different thing from hanging a turn open indefinitely.
 
-## Mark everything you post to GitHub
+## Mark everything you post to the tracker
 
-Every issue, comment, reply, review and pull request description you write starts with a robot
-emoji on its own line, then a blank line, then the body:
+Every issue, comment, reply, review and pull or merge request description you write starts with
+a robot emoji on its own line, then a blank line, then the body:
 
 ```
 🤖
@@ -95,7 +95,7 @@ emoji on its own line, then a blank line, then the body:
 Fixed in abc1234 — the retry now backs off.
 ```
 
-**On GitHub you post through the human's own token, so every comment carries their name.** A
+**You post through the human's own account, so every comment carries their name.** A
 reader scrolling a thread cannot otherwise tell which words are theirs. The mark is the only
 thing that distinguishes them, which makes it a matter of not misrepresenting someone, not a
 matter of style.
@@ -105,8 +105,17 @@ blocked by looking at whether the **last** comment carries the mark. Post withou
 own comment reads as a human reply, so the loop picks the question up as answered — by you.
 
 The tools in `pm` add it for you and cannot be forgotten: `file-issue`, `ask-async`,
-`reply-issue`. **Use them.** When you must go straight to `gh` — a PR description, a review
-comment, a threaded reply — add it yourself, because nothing else will.
+`reply-issue`. **Use them.** They reach whichever tracker is configured, so they keep working
+where a hardcoded CLI does not. When you must go to the host's own CLI for something they do not
+cover — a change description, a review comment, a threaded reply — add the mark yourself,
+because nothing else will.
+
+**The configured provider is authoritative; no CLI named anywhere is.** `PM_PROVIDER` chooses the
+backend and `PM_REPO` the repository — `gh` and `glab` are two of several, and on a given machine
+either may be absent. So a missing or denied CLI is evidence about that command and nothing else:
+it does **not** mean the tracker is unreachable. `file-issue` and `questions list` answer that
+question. Answering it any other way is how an agent reported an unreachable tracker and then
+invented the content it believed it could not fetch.
 
 Adding it twice is harmless; the tools are idempotent and check before prepending.
 
