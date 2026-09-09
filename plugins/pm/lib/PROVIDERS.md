@@ -234,5 +234,8 @@ would be reimplementing a workaround for a problem you do not have.
 agent when several share a tracker: what it files carries `agent-<name>`, `backlog-queue` drops
 other agents' items (`--all` restores the full view), and `backlog-claim` refuses them.
 
+`PM_AGENT=auto` derives the name from this session's harness record
+(`~/.claude/sessions/$CLAUDE_PID.json`), so it can be set once globally rather than per session.
+
 Unset changes nothing. This is above the seam — no provider function is added or altered, and
 labels already flow through `provider_ensure_label` and `provider_create_issue`.

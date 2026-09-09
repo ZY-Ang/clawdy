@@ -60,6 +60,46 @@ unset PM_AGENT
 agent_may_claim task agent-worker-2  && ok "unset claims anything"            || bad "unset claims anything"
 
 # ---------------------------------------------------------------------------
+# PM_AGENT=auto -- derived from the harness, so there is nothing to remember
+# ---------------------------------------------------------------------------
+CLAUDE_SESSIONS_DIR=$TMP/sessions; export CLAUDE_SESSIONS_DIR
+mkdir -p "$CLAUDE_SESSIONS_DIR"
+CLAUDE_PID=4242; export CLAUDE_PID
+printf '{"pid":4242,"name":"clawdy-master","formerNames":[{"name":"clawdy-2"}]}\n' \
+  > "$CLAUDE_SESSIONS_DIR/4242.json"
+
+PM_AGENT=auto
+[ "$(agent_name)" = clawdy-master ] && ok "auto reads the session name" \
+                                    || bad "auto reads the session name" "$(agent_name)"
+[ "$(agent_label)" = agent-clawdy-master ] && ok "auto produces a label" \
+                                           || bad "auto produces a label" "$(agent_label)"
+
+# A free-text name is slugified rather than refused -- cloud sessions are called
+# things like "Homelab k3s hardware options".
+printf '{"pid":4242,"name":"Homelab k3s HW options"}\n' > "$CLAUDE_SESSIONS_DIR/4242.json"
+[ "$(agent_name)" = homelab-k3s-hw-options ] && ok "a free-text name is slugified" \
+                                             || bad "a free-text name is slugified" "$(agent_name)"
+
+# A rename must not strand what the session already filed.
+printf '{"pid":4242,"name":"clawdy-master","formerNames":[{"name":"clawdy-2"}]}\n' \
+  > "$CLAUDE_SESSIONS_DIR/4242.json"
+agent_may_claim task agent-clawdy-2 && ok "a former name is still this session" \
+                                    || bad "a former name is still this session"
+agent_may_claim task agent-someone-else && bad "auto still refuses another agent" \
+                                        || ok "auto still refuses another agent"
+
+# Unresolvable auto must be visible, not silently indistinguishable from unset.
+CLAUDE_PID=9999
+[ -z "$(agent_name)" ] && ok "auto with no record yields nothing" || bad "auto with no record yields nothing"
+agent_auto_unresolved && ok "and says so" || bad "and says so"
+CLAUDE_PID=4242
+agent_auto_unresolved && bad "resolved auto is not flagged" || ok "resolved auto is not flagged"
+unset PM_AGENT
+agent_auto_unresolved && bad "unset is not an unresolved auto" || ok "unset is not an unresolved auto"
+
+unset CLAUDE_PID CLAUDE_SESSIONS_DIR
+
+# ---------------------------------------------------------------------------
 # backlog-queue
 # ---------------------------------------------------------------------------
 cat > "$TMP/issues.json" <<'JSON'
@@ -183,6 +223,19 @@ else bad "unset writes no agent line" "agent field: '$(noteline agent)'"; fi
 # sync replays it: the axis loop must carry `agent` or the lane is lost on retry.
 grep -q 'for _ax in .*agent' "$BIN/questions" && ok "sync replays the agent field" \
   || bad "sync replays the agent field" "questions does not replay agent"
+
+# The warning must actually reach a caller -- a lane that silently does not
+# exist is the shape this repo keeps repeating.
+out=$(PM_AGENT=auto CLAUDE_PID=9999 CLAUDE_SESSIONS_DIR=$TMP/empty \
+      BACKLOG_ISSUES_JSON=$TMP/issues.json BACKLOG_NOW=1800000000 \
+      "$BIN/backlog-queue" 2>&1 >/dev/null)
+case "$out" in *"could not read this session"*) ok "queue warns on unresolved auto" ;;
+               *) bad "queue warns on unresolved auto" "[$out]" ;; esac
+
+out=$(PM_AGENT=auto CLAUDE_PID=9999 CLAUDE_SESSIONS_DIR=$TMP/empty \
+      BACKLOG_ISSUE_JSON=$TMP/one.json "$BIN/backlog-claim" 9 --dry-run 2>&1 >/dev/null)
+case "$out" in *"could not read this session"*) ok "claim warns on unresolved auto" ;;
+               *) bad "claim warns on unresolved auto" "[$out]" ;; esac
 
 cd "$HERE"
 echo "---"

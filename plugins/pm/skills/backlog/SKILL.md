@@ -231,8 +231,23 @@ answer *whose lane this is* — so any agent can claim work another filed for a 
 stream, and the `claimed` label then makes that grab look legitimate to everyone else.
 
 ```sh
-export PM_AGENT=backlog-worker      # label form: agent-backlog-worker
+export PM_AGENT=auto                # take this session's own name
+export PM_AGENT=backlog-worker      # or name the lane yourself
 ```
+
+**`auto` is the one to set**, once, anywhere that reaches every session. A name you have to set
+per session is a name you forget to set, and an agent that forgot is an agent with no lane.
+
+It is derived, not guessed. The harness writes the session's own record to
+`~/.claude/sessions/$CLAUDE_PID.json`, and `$CLAUDE_PID` is exported into every subprocess — so
+`.name` is readable without anything being passed in. Free text is slugified, because a session
+can be called `Homelab k3s hardware options`.
+
+**A rename does not strand the work already filed.** The record keeps `formerNames`, and an item
+labelled with one of those is still this session's to claim.
+
+**If `auto` cannot resolve, the tools say so** and carry on unscoped. Silence there would be
+indistinguishable from nobody having configured a lane at all.
 
 **Unset is today's behaviour exactly** — nothing filters, nothing refuses. That is what makes
 it safe to turn on while other agents are mid-flight.
@@ -251,9 +266,7 @@ the claim is what writes.
 label at all. Only a label naming a *different* agent refuses. Strict own-only would strand
 every legacy issue and everything a human filed by hand, which is most of a real backlog.
 
-Identity is explicit because there is nothing stable to derive it from: the harness session
-name is not in the process environment, only a mutable UUID is. Precedence is the same as
-every other knob here — `--agent` beats `PM_AGENT` beats unset.
+Precedence is the same as every other knob here — `--agent` beats `PM_AGENT` beats unset.
 
 ## Other trackers
 

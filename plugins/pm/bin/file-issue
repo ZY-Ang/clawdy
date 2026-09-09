@@ -144,6 +144,11 @@ if [ "$KIND" = question ] && [ -z "$BODY" ]; then
   exit 2
 fi
 
+if agent_auto_unresolved; then
+  echo "file-issue: PM_AGENT=auto could not read this session's name; proceeding unscoped." >&2
+  echo "            Set PM_AGENT explicitly if the lane matters here." >&2
+fi
+
 AGENT_LABEL=$(agent_label)
 if [ -n "$AGENT_LABEL" ] && ! agent_name_ok "$(agent_name)"; then
   echo "file-issue: agent name is not usable as a label -- letters, digits," >&2

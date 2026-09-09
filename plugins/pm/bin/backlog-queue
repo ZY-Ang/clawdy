@@ -95,6 +95,9 @@ fi
 # splitting it across jq and the shell means rebuilding sort keys with string
 # surgery. Numbers are inverted and zero-padded so a plain lexicographic `sort`
 # reproduces the order -- no numeric sort flags, which differ across platforms.
+if agent_auto_unresolved; then
+  echo "backlog-queue: PM_AGENT=auto could not read this session's name; showing every lane." >&2
+fi
 ME=$(agent_name); [ "$ALL" -eq 1 ] && ME=""
 RANKED=$(printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson esc "$ESC" --arg me "$ME" '
   def lbl: [ .labels[]? | (if type == "object" then .name else . end) | strings ];
