@@ -30,7 +30,12 @@ SESSION=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-}}
 
 # Only this session's questions. Another agent's open question is not something
 # this human is answering right now, and naming it would be noise.
+#
+# With no session id every agent shares `unsessioned`, so the list is NOT this
+# session's -- it is everyone's. The reminder says so rather than presenting
+# another agent's questions as work this one owes.
 DIR="$QUESTIONS_DIR/${SESSION:-unsessioned}"
+SCOPED=1; [ -n "${SESSION:-}" ] || SCOPED=0
 [ -d "$DIR" ] || exit 0
 
 n=0
@@ -52,8 +57,17 @@ done
 
 # Written as an instruction rather than a status line: a status line is read as
 # background and skipped, and being skipped is the whole problem.
+# Computed here, not branched inside the heredoc: a heredoc is text, so an `if`
+# written in one is printed rather than evaluated -- which is how the first
+# attempt at this looked correct and did nothing.
+if [ "$SCOPED" -eq 1 ]; then
+  WHOSE="in this session"
+else
+  WHOSE="with no session id — these are shared with every other unscoped agent, so some may not be yours"
+fi
+
 cat <<MSG
-[open questions] You asked $n question(s) in this session that are still open:
+[open questions] You asked $n question(s) $WHOSE that are still open:
 $out
 
 If the message you are about to answer resolves one of them, record it BEFORE

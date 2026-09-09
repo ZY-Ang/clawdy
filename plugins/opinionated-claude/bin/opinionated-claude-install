@@ -20,13 +20,21 @@ TARGET="$HOME/.claude/CLAUDE.md"
 MODE=install
 for arg in "$@"; do
   case "$arg" in
-    --project) TARGET="CLAUDE.md" ;;
+    # Anchored to the repository root: `CLAUDE.md` is relative, so running this
+    # from a subdirectory wrote a file Claude Code never reads.
+    --project) TARGET="__PROJECT__" ;;
     --print)   MODE=print ;;
     --remove)  MODE=remove ;;
     -h|--help) sed -n '2,12p' "$0"; exit 0 ;;
     *) echo "unknown option: $arg" >&2; exit 2 ;;
   esac
 done
+
+if [ "$TARGET" = "__PROJECT__" ]; then
+  ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || {
+    echo "error: --project needs a git repository; run it inside one" >&2; exit 2; }
+  TARGET="$ROOT/CLAUDE.md"
+fi
 
 [ -f "$SRC" ] || { echo "error: cannot find $SRC" >&2; exit 1; }
 
