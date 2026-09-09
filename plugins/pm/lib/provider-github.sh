@@ -14,7 +14,7 @@
 #   provider_name              a word, for messages
 #   provider_available         0 if this backend can be reached right now
 #   provider_issues            normalised open issues, as a JSON array, on stdout
-#   provider_supports_deps     0 if the backend exposes an issue dependency graph
+#   provider_supports_deps <repo>  0 if that repo exposes an issue dependency graph
 #
 # Normalised issue:
 #   { number, title, state, labels: [string], createdAt, updatedAt,
@@ -71,9 +71,16 @@ provider_available() { command -v gh >/dev/null 2>&1; }
 # GitHub exposes blockedBy/blocking only where the instance supports issue
 # relationships -- gh adds those fields conditionally. Older GHES will not, and
 # the ordering has to degrade to "no dependencies known" rather than fail.
+# Takes the repo it is being asked about. Without it the probe went to whatever
+# the cwd resolved to, so a failure THERE silently dropped blockedBy from a
+# listing of a DIFFERENT repository -- backlog-queue then read [] for every
+# issue, the --blocked view emptied, and the dependents term went uniformly zero
+# while the queue still printed a confident order. Nothing errored.
 provider_supports_deps() {
   [ -n "${PM_ASSUME_DEPS:-}" ] && return "${PM_ASSUME_DEPS}"
-  gh issue list --limit 1 --json number,blockedBy >/dev/null 2>&1
+  _repo=${1:-}
+  # shellcheck disable=SC2086
+  gh issue list --limit 1 ${_repo:+--repo "$_repo"} --json number,blockedBy >/dev/null 2>&1
 }
 
 provider_issues() {
@@ -83,7 +90,7 @@ provider_issues() {
   # blockedBy only where the instance supports issue relationships. Asking for
   # it elsewhere fails the whole call, so try once and fall back rather than
   # letting one unsupported field cost the entire queue.
-  if provider_supports_deps; then
+  if provider_supports_deps "$_repo"; then
     # shellcheck disable=SC2086
     gh issue list --state open --limit "${PM_LIMIT:-500}" \
        ${_repo:+--repo "$_repo"} --json "$_fields",blockedBy 2>/dev/null && return 0
