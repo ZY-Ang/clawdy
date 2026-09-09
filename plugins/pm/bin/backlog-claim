@@ -5,6 +5,7 @@
 #   backlog-claim 42 --branch claude/foo
 #   backlog-claim 42 --base main --repo o/n
 #   backlog-claim 42 --force               # a size-l issue, claimed anyway
+#   backlog-claim 42 --agent worker-2      # claim as that agent, not $PM_AGENT
 #   backlog-claim 42 --dry-run             # say what would happen, touch nothing
 #
 # Three things happen together, and the middle one is the point: the issue gets
@@ -33,6 +34,7 @@ PM_LIB=$HERE/../lib
 . "$PM_LIB/load-provider.sh"
 pm_load_provider || exit 2
 . "$HERE/../lib/agent-prefix.sh"
+. "$HERE/../lib/agent-scope.sh"
 . "$HERE/../lib/persist.sh"
 
 usage() { sed -n '2,16p' "$0"; exit "${1:-0}"; }
@@ -43,12 +45,13 @@ say_backend() {
   return 0
 }
 
-NUM=""; BRANCH=""; BASE=""; REPO=${PM_REPO:-}; FORCE=0; DRY=0
+NUM=""; BRANCH=""; BASE=""; REPO=${PM_REPO:-}; FORCE=0; DRY=0; AGENT_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --branch) BRANCH=${2:?}; shift 2 ;;
     --base)   BASE=${2:?};   shift 2 ;;
     --repo)   REPO=${2:?};   shift 2 ;;
+    --agent)  AGENT_OVERRIDE=${2:?}; shift 2 ;;
     --force)  FORCE=1; shift ;;
     --dry-run) DRY=1; shift ;;
     -h|--help) usage 0 ;;
@@ -87,6 +90,11 @@ LABELS=$(printf '%s' "$ISSUE" | jq -r '[.labels[]? | (if type == "object" then .
 
 has_label() { case " $LABELS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
 
+if agent_auto_unresolved; then
+  echo "backlog-claim: PM_AGENT=auto could not read this session's name; proceeding unscoped." >&2
+  echo "               Set PM_AGENT explicitly if the lane matters here." >&2
+fi
+
 # --- the refusals, before anything is written --------------------------------
 case "$STATE" in
   OPEN) ;;
@@ -108,6 +116,15 @@ fi
 
 if has_label needs-human; then
   echo "backlog-claim: issue $NUM is needs-human. Answer it first -- check-replies says whether it is." >&2
+  exit 1
+fi
+
+# Here rather than only in the queue: a filter is routed around by claiming the
+# number directly, and the `claimed` label then makes the grab look legitimate.
+# shellcheck disable=SC2086
+if ! agent_may_claim $LABELS; then
+  echo "backlog-claim: issue $NUM belongs to agent '$(agent_owner $LABELS)', and this is '$(agent_name)'." >&2
+  echo "               Claiming it would take work another agent filed for its own stream." >&2
   exit 1
 fi
 

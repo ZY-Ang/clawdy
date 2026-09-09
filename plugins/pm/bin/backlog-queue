@@ -5,6 +5,7 @@
 #   backlog-queue --top 5
 #   backlog-queue --why            # the sort key beside each line
 #   backlog-queue --blocked        # what is NOT ready, and what is holding it
+#   backlog-queue --all            # every agent's items, not just this one's
 #   backlog-queue --repo owner/n
 #
 # A loop that picks the first open issue it sees works whatever it happened to
@@ -36,15 +37,18 @@ PM_LIB=$HERE/../lib
 . "$PM_LIB/load-provider.sh"
 pm_load_provider || exit 2
 . "$HERE/../lib/deps.sh"
+. "$HERE/../lib/agent-scope.sh"
 
 usage() { sed -n '2,12p' "$0"; exit "${1:-0}"; }
 
-TOP=0; WHY=0; BLOCKED=0; REPO=${PM_REPO:-}
+TOP=0; WHY=0; BLOCKED=0; REPO=${PM_REPO:-}; ALL=0; AGENT_OVERRIDE=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --top) TOP=${2:?}; shift 2 ;;
     --why) WHY=1; shift ;;
     --blocked) BLOCKED=1; shift ;;
+    --all) ALL=1; shift ;;
+    --agent) AGENT_OVERRIDE=${2:?}; shift 2 ;;
     --repo) REPO=${2:?}; shift 2 ;;
     -h|--help) usage 0 ;;
     *) echo "backlog-queue: unknown option $1" >&2; exit 2 ;;
@@ -91,7 +95,11 @@ fi
 # splitting it across jq and the shell means rebuilding sort keys with string
 # surgery. Numbers are inverted and zero-padded so a plain lexicographic `sort`
 # reproduces the order -- no numeric sort flags, which differ across platforms.
-RANKED=$(printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson esc "$ESC" '
+if agent_auto_unresolved; then
+  echo "backlog-queue: PM_AGENT=auto could not read this session's name; showing every lane." >&2
+fi
+ME=$(agent_name); [ "$ALL" -eq 1 ] && ME=""
+RANKED=$(printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson esc "$ESC" --arg me "$ME" '
   def lbl: [ .labels[]? | (if type == "object" then .name else . end) | strings ];
   # GitLab stamps milliseconds ("...T10:12:28.895Z"), GitHub does not, and the
   # fromdateiso8601 builtin rejects the fractional part outright -- so every
@@ -179,7 +187,9 @@ RANKED=$(printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson esc "$ESC" '
       # same verdict check-replies computes, deliberately not a second copy.
       | (($i.comments // []) | if length == 0 then false
             else ((last.body // "") | startswith("🤖") | not) end) as $answered
+      | ([ $L[] | select(startswith("agent-")) | ltrimstr("agent-") ] | first) as $owner
       | (if   (($L | index("needs-human")) and ($answered | not)) then "needs-human, unanswered"
+         elif ($me != "" and $owner != null and $owner != $me) then "labelled for agent " + $owner
          elif ($L | index("claimed"))  then "claimed by a branch"
          elif ($L | index("finding"))  then "a finding - it is a sub-issue, not queue work"
          elif ((blockers | length) > 0) then "blocked by " + ([ blockers[] | "#" + (.|tostring) ] | join(", "))

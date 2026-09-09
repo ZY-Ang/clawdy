@@ -227,3 +227,15 @@ so the author distinguishes nothing.
 
 **If your backend posts as a separate user, say so and use the author.** Emulating the mark
 would be reimplementing a workaround for a problem you do not have.
+
+## PM_AGENT — whose lane an item is in
+
+`PM_PROVIDER` chooses the backend and `PM_REPO` the repository. `PM_AGENT` scopes items to one
+agent when several share a tracker: what it files carries `agent-<name>`, `backlog-queue` drops
+other agents' items (`--all` restores the full view), and `backlog-claim` refuses them.
+
+`PM_AGENT=auto` derives the name from this session's harness record
+(`~/.claude/sessions/$CLAUDE_PID.json`), so it can be set once globally rather than per session.
+
+Unset changes nothing. This is above the seam — no provider function is added or altered, and
+labels already flow through `provider_ensure_label` and `provider_create_issue`.

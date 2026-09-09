@@ -69,6 +69,13 @@ persist_question() {
     printf -- '- topic: %s\n' "$(slugify "$_title")"
     printf -- '- cwd: %s\n' "$PWD"
     printf -- '- session: %s\n' "$(q_session)"
+    # Recorded so `questions sync` re-files under the same agent. Without it a
+    # note written by one agent is replayed unlabelled and leaves its lane.
+    # command -v, not a bare call: backlog-cluster sources this without
+    # agent-scope, and an unknown command under set -e is a hard exit.
+    _agent=""
+    command -v agent_name >/dev/null 2>&1 && _agent=$(agent_name)
+    [ -n "$_agent" ] && printf -- '- agent: %s\n' "$_agent"
     _remote=$(git remote get-url origin 2>/dev/null || true)
     [ -n "$_remote" ] && printf -- '- repo: %s\n' "$_remote"
     printf -- '- filed: no\n'
