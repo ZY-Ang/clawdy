@@ -238,11 +238,22 @@ provider_ensure_label() {
 # duplicate; a backend with no reasons should ignore it rather than refuse.
 provider_close_issue() {
   _n=${1:?}; _reason=${2:-}; _repo=${3:-}
-  # shellcheck disable=SC2086
-  _gh_write issue close "$_n" ${_repo:+--repo "$_repo"} ${_reason:+--reason "$_reason"} ||
+  PROVIDER_CLOSE_REASON_APPLIED=0
+  # gh takes {completed|not planned|duplicate} -- a SPACE. Sending `not_planned`
+  # or `not-planned` is rejected outright, and the fallback below then closed the
+  # issue with no reason while the caller was told its reason had been recorded.
+  _r=$(printf '%s' "$_reason" | tr '_-' '  ')
+  if [ -n "$_r" ]; then
+    # shellcheck disable=SC2086
+    if _gh_write issue close "$_n" ${_repo:+--repo "$_repo"} --reason "$_r"; then
+      PROVIDER_CLOSE_REASON_APPLIED=1
+      return 0
+    fi
+  fi
   # A backend that rejects the reason must still be able to close. Falling back
   # rather than failing keeps `reply-issue --closes` working against an older
-  # instance that has no reasons at all.
+  # instance that has no reasons at all -- but the caller is told the reason was
+  # dropped rather than being handed back its own request as if it had stuck.
   # shellcheck disable=SC2086
   _gh_write issue close "$_n" ${_repo:+--repo "$_repo"}
 }

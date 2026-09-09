@@ -166,6 +166,9 @@ provider_label() {
 # is part of the contract rather than of the call.
 provider_close_issue() {
   _n=${1:?}; _reason=${2:-}; _repo=${3:-}
+  # GitLab has no close reasons at all, so this is never applied. Saying so lets
+  # the caller report what happened instead of echoing back what it asked for.
+  PROVIDER_CLOSE_REASON_APPLIED=0
   # shellcheck disable=SC2086
   _glab_write issue close "$_n" ${_repo:+-R "$_repo"}
 }
