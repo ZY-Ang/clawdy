@@ -214,30 +214,41 @@ pushed=$( cd "$TMP/up" && git for-each-ref --format='%(refname:short)' refs/head
 [ ! -s "$CALLS" ] && ok "and makes no tracker call either" || bad "tracker called before refusing" "$(head -1 "$CALLS")"
 
 # The matching case must still work, however the remote URL is spelled.
-mkrepo; issue "$OPEN"
-( cd "$TMP/wt" && git remote set-url origin "https://github.com/owner/name.git" ) 2>/dev/null
-out=$(claim 42 --repo owner/name)
-case "$out" in *"this checkout pushes to"*) bad "a matching --repo was refused" "$out" ;;
-  *) ok "an https remote matching --repo is accepted" ;; esac
-
-mkrepo; issue "$OPEN"
-( cd "$TMP/wt" && git remote set-url origin "git@github.com:owner/name.git" ) 2>/dev/null
-out=$(claim 42 --repo owner/name)
-case "$out" in *"this checkout pushes to"*) bad "an ssh remote matching --repo was refused" "$out" ;;
-  *) ok "an ssh remote matching --repo is accepted" ;; esac
-
+#
+# --dry-run, and asserted on what it PRINTS. Two reasons, both learned the hard
+# way here:
+#
+# 1. These cases point origin at a real host to exercise URL parsing. Without
+#    --dry-run the claim then proceeds to `git push` there -- so the suite
+#    reached out to github.com and gitlab.com and blocked, 6m40s of wall clock
+#    for 0.7s of CPU, until something killed it.
+# 2. The old assertion was `case "$out" in *"refused text"*) bad ;; *) ok ;;`,
+#    which reports ok for EMPTY output. A hang scored as a pass, and so would
+#    deleting backlog-claim outright. Matching `would claim` positively is a
+#    thing only a run that actually happened can produce.
+accepts() {  # accepts <label> <remote-url> <--repo value>
+  mkrepo; issue "$OPEN"
+  ( cd "$TMP/wt" && git remote set-url origin "$2" ) 2>/dev/null
+  _o=$(claim 42 --repo "$3" --dry-run 2>&1)
+  case "$_o" in
+    *"this checkout pushes to"*) bad "$1" "refused: $_o" ;;
+    *"would claim #42"*) ok "$1" ;;
+    *) bad "$1" "no claim and no refusal -- did it run? [$_o]" ;;
+  esac
+}
+accepts "an https remote matching --repo is accepted" "https://github.com/owner/name.git" owner/name
+accepts "an ssh remote matching --repo is accepted"   "git@github.com:owner/name.git"      owner/name
 # A subgroup path is the shape that breaks a naive basename comparison.
-mkrepo; issue "$OPEN"
-( cd "$TMP/wt" && git remote set-url origin "https://gitlab.com/group/sub/proj.git" ) 2>/dev/null
-out=$(claim 42 --repo group/sub/proj)
-case "$out" in *"this checkout pushes to"*) bad "a subgroup path matching --repo was refused" "$out" ;;
-  *) ok "a nested group path matching --repo is accepted" ;; esac
+accepts "a nested group path matching --repo is accepted" "https://gitlab.com/group/sub/proj.git" group/sub/proj
 
 # And with no --repo at all, nothing changes for anyone relying on today's behaviour.
 mkrepo; issue "$OPEN"
-out=$(claim 42)
-case "$out" in *"this checkout pushes to"*) bad "no --repo must not be refused" "$out" ;;
-  *) ok "with no --repo the cwd remains the destination" ;; esac
+out=$(claim 42 --dry-run 2>&1)
+case "$out" in
+  *"this checkout pushes to"*) bad "no --repo must not be refused" "$out" ;;
+  *"would claim #42"*) ok "with no --repo the cwd remains the destination" ;;
+  *) bad "with no --repo the cwd remains the destination" "did it run? [$out]" ;;
+esac
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
