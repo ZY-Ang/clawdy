@@ -166,9 +166,18 @@ fi
 
 # Depends on the FLAG, not on the label.
 if [ "$CLOSES" -eq 1 ]; then
-  _reason=$(printf '%s' "$CLOSE_AS" | tr '-' '_')
-  if provider_close_issue "$NUMBER" "$_reason" "$REPO"; then
-    printf 'Closed #%s as %s.\n' "$NUMBER" "$CLOSE_AS"
+  # Passed through as written. Translating to the backend's spelling belongs in
+  # the provider: this used to send `not_planned`, gh wants `not planned`, the
+  # call was rejected, the fallback closed it with no reason at all -- and this
+  # line then printed the reason it had failed to set.
+  PROVIDER_CLOSE_REASON_APPLIED=0
+  if provider_close_issue "$NUMBER" "$CLOSE_AS" "$REPO"; then
+    if [ "${PROVIDER_CLOSE_REASON_APPLIED:-0}" = 1 ]; then
+      printf 'Closed #%s as %s.\n' "$NUMBER" "$CLOSE_AS"
+    else
+      printf 'Closed #%s. This backend recorded no reason, so "%s" is not on it.\n' \
+        "$NUMBER" "$CLOSE_AS"
+    fi
   else
     printf 'reply-issue: replied, but could not close #%s.\n' "$NUMBER" >&2
     [ -n "${PROVIDER_ERR:-}" ] && printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2

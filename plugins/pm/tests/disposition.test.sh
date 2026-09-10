@@ -165,6 +165,59 @@ if [ -n "$c" ] && [ -n "$l" ] && [ -n "$x" ] && [ "$c" -lt "$l" ] && [ "$l" -lt 
   ok "comment, then label, then close -- the order still holds"
 else bad "ordering preserved" "comment=$c label=$l close=$x"; fi
 
+# --- the reason must reach gh in the spelling gh accepts ----------------------
+# gh takes {completed|not planned|duplicate} -- a SPACE. This sent `not_planned`,
+# gh rejected it, the fallback closed with NO reason, and reply-issue printed
+# "Closed #33 as not-planned." The flag's whole purpose is that distinction, and
+# every not-planned close ever made by this tool was recorded as completed.
+#
+# Asserted on the ARGV, not the exit code: the exit code was 0 throughout.
+mkgh no; : > "$TMP/calls"
+r 33 "Withdrawn" --closes --as not-planned >/dev/null 2>&1
+if called "issue close 33 --reason not planned"; then ok "not-planned reaches gh with a space"
+else bad "not-planned reaches gh with a space" "$(cat "$TMP/calls")"; fi
+called "not_planned" && bad "the underscore form is gone" "$(cat "$TMP/calls")" \
+                     || ok "the underscore form is gone"
+
+# And the happy path must SAY it applied. Without this, marking the reason as
+# never-applied passes the whole suite -- the mutation that found this gap.
+mkgh no; : > "$TMP/calls"
+out=$(r 33 "Withdrawn" --closes --as not-planned 2>/dev/null)
+case "$out" in *"as not-planned."*) ok "an accepted reason is reported as applied" ;;
+               *) bad "an accepted reason is reported as applied" "[$out]" ;; esac
+
+mkgh no; : > "$TMP/calls"
+r 33 "Dup" --closes --as duplicate >/dev/null 2>&1
+called "issue close 33 --reason duplicate" && ok "duplicate is passed through" \
+  || bad "duplicate is passed through" "$(cat "$TMP/calls")"
+
+mkgh no; : > "$TMP/calls"
+r 33 "Done" --closes >/dev/null 2>&1
+called "issue close 33 --reason completed" && ok "the default reason is sent too" \
+  || bad "the default reason is sent too" "$(cat "$TMP/calls")"
+
+# A backend that rejects the reason must still close -- and must NOT be reported
+# as having recorded one. That silent fallback is what made this invisible.
+cat > "$TMP/bin/gh" <<EOF
+#!/bin/sh
+echo "gh \$*" >> "$TMP/calls"
+case "\$1 \$2" in
+  "issue view") exit 0 ;;
+  "issue comment") echo "https://github.com/o/r/issues/33#c1"; exit 0 ;;
+  "issue close") case "\$*" in *--reason*) exit 1 ;; *) exit 0 ;; esac ;;
+esac
+exit 0
+EOF
+chmod +x "$TMP/bin/gh"; : > "$TMP/calls"
+out=$(r 33 "Withdrawn" --closes --as not-planned 2>/dev/null)
+case "$out" in
+  *"as not-planned."*) bad "a dropped reason is not reported as applied" "$out" ;;
+  *"recorded no reason"*) ok "a dropped reason is reported as dropped" ;;
+  *) bad "a dropped reason is reported as dropped" "[$out]" ;;
+esac
+called "issue close 33" && ok "and the issue still closes" \
+  || bad "and the issue still closes" "$(cat "$TMP/calls")"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)
