@@ -328,6 +328,82 @@ case "$out" in
   *) bad "the reminder did not list the shared question at all" "$out" ;;
 esac
 
+# --- short ids must not collide, and a collision must not resolve silently ----
+# Minting used `cksum | tr -dc 0-9 | tail -c 5`. cksum prints "<crc> <bytes>",
+# the byte count is near-constant within a session, and tail took the END -- so
+# two of the five digits were literally fixed. Measured on the real store: 11
+# ids duplicated across 215 notes, one of them across two different sessions.
+# Sourced here rather than assumed: this suite drives the binaries, so q_newid
+# is not otherwise in scope and the loop below would append 400 empty lines and
+# call it a pass.
+( . "$HERE/../lib/persist.sh" && command -v q_newid >/dev/null ) \
+  || bad "persist.sh defines q_newid" "cannot source it"
+. "$HERE/../lib/persist.sh"
+
+ids=$TMP/ids
+: > "$ids"
+i=0
+while [ $i -lt 400 ]; do q_newid >> "$ids"; echo >> "$ids"; i=$((i + 1)); done
+minted=$(wc -l < "$ids" | tr -d ' ')
+distinct=$(sort -u "$ids" | wc -l | tr -d ' ')
+# 400 draws from 100000 collide ~0.8 times on average; from the old ~1000 space
+# they collide ~60 times. Anything under 10 distinguishes the two decisively.
+dupes=$((minted - distinct))
+[ "$dupes" -lt 10 ] && ok "400 ids collide rarely ($dupes)" \
+                    || bad "400 ids collide rarely" "$dupes collisions in $minted"
+
+# The trailing digits were the tell: constant across a session. Every one of
+# 100 possible endings should be reachable.
+endings=$(sed 's/.*\(..\)$/\1/' "$ids" | sort -u | wc -l | tr -d ' ')
+[ "$endings" -gt 50 ] && ok "the trailing digits vary ($endings of 100 seen)" \
+                      || bad "the trailing digits vary" "only $endings distinct endings"
+
+# Shape has to hold too: q- plus exactly 5 digits, zero-padded.
+badshape=$(grep -cv '^q-[0-9][0-9][0-9][0-9][0-9]$' "$ids" || true)
+[ "$badshape" -eq 0 ] && ok "every id is q- plus exactly five digits" \
+                      || bad "id shape" "$badshape malformed"
+
+# --- lookup: several matches is an error, not a first-match guess -------------
+reset
+D1=$CLAUDE_QUESTIONS_DIR/sess-aaa; D2=$CLAUDE_QUESTIONS_DIR/sess-zzz
+mkdir -p "$D1" "$D2"
+mknote() { printf '# %s\n\n- id: %s\n- kind: task\n- status: open\n- filed: no\n\n---\n\nbody\n' "$2" "$3" > "$1"; }
+mknote "$D1/2026-01-01-one-q-11111.md" "note one" q-11111
+mknote "$D2/2026-01-02-two-q-11111.md" "note two" q-11111
+mknote "$D1/2026-01-03-solo-q-22222.md" "solo"    q-22222
+
+q() { PATH="$TMP/bin:$PATH" sh "$BIN/questions" "$@" 2>&1; }
+
+out=$(q show q-11111); rc=$?
+case "$out" in *"ambiguous"*) ok "a duplicated id is reported, not guessed" ;;
+               *) bad "a duplicated id is reported, not guessed" "[$out]" ;; esac
+[ "$rc" -eq 2 ] && ok "and exits 2" || bad "and exits 2" "exit $rc"
+# Both paths named: one of them is the note the caller meant, and they cannot
+# tell which without seeing both.
+case "$out" in *sess-aaa*) case "$out" in *sess-zzz*) ok "both notes are named" ;;
+                  *) bad "both notes are named" "[$out]" ;; esac ;;
+               *) bad "both notes are named" "[$out]" ;; esac
+case "$out" in *"2 notes carry it"*) ok "the count matches what is listed" ;;
+               *) bad "the count matches what is listed" "[$out]" ;; esac
+
+out=$(q show q-22222); rc=$?
+case "$out" in *solo*) ok "a unique id still resolves" ;;
+               *) bad "a unique id still resolves" "[$out]" ;; esac
+[ "$rc" -eq 0 ] && ok "and exits 0" || bad "and exits 0" "exit $rc"
+
+out=$(q show q-99999); rc=$?
+case "$out" in *"no note with id"*) ok "a missing id says missing, not ambiguous" ;;
+               *) bad "a missing id says missing, not ambiguous" "[$out]" ;; esac
+
+# answer and close resolve through the same helper, so they must refuse too --
+# closing the wrong session's question is the damage this prevents.
+out=$(q close q-11111 --reason superseded); rc=$?
+case "$out" in *"ambiguous"*) ok "close refuses an ambiguous id" ;;
+               *) bad "close refuses an ambiguous id" "[$out]" ;; esac
+[ "$(sed -n 's/^- status: //p' "$D1/2026-01-01-one-q-11111.md")" = open ] \
+  && ok "and neither note was touched" \
+  || bad "and neither note was touched" "note one was modified"
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)
