@@ -50,12 +50,43 @@ human_age() {
 }
 
 all_notes() { find "$QUESTIONS_DIR" -name '*.md' -type f 2>/dev/null | sort -r; }
+# Every match, not the first. A short id is short enough to collide -- 11 ids
+# were duplicated across 215 notes on the store this was written for -- and
+# returning whichever session UUID happens to sort first resolves silently to
+# the wrong note. Better minting makes that rare; it cannot make it impossible,
+# so the caller is told rather than guessed at.
+#
+# Exit 0 one match (path on stdout) - 1 none - 3 several (paths on stdout).
 find_note() {
   _nl=$(mktemp); all_notes > "$_nl"
+  _hits=$(mktemp)
   while IFS= read -r f; do
-    [ "$(get_field "$f" id)" = "$1" ] && { printf '%s' "$f"; return 0; }
+    [ "$(get_field "$f" id)" = "$1" ] && printf '%s\n' "$f" >> "$_hits"
   done < "$_nl"; rm -f "$_nl"
-  return 1
+  _n=$(wc -l < "$_hits" | tr -d ' ')
+  case "$_n" in
+    0) rm -f "$_hits"; return 1 ;;
+    1) printf '%s' "$(cat "$_hits")"; rm -f "$_hits"; return 0 ;;
+    *) cat "$_hits"; rm -f "$_hits"; return 3 ;;
+  esac
+}
+
+# The message every caller of find_note gives when it did not resolve to one.
+# Written once: three call sites said "no note with id" for BOTH outcomes, which
+# is how an ambiguous id would have read as a missing one.
+note_lookup_failed() {  # <rc> <id> <what find_note printed>
+  if [ "$1" = 3 ]; then
+    # printf '%s\n', not '%s': without the trailing newline wc counts one
+    # fewer line than there are paths, so two matches announced themselves as
+    # one and then listed two.
+    printf 'questions: id %s is ambiguous -- %s notes carry it:\n' \
+      "$2" "$(printf '%s\n' "$3" | wc -l | tr -d ' ')" >&2
+    printf '%s\n' "$3" | sed 's|.*/questions/|  |' >&2
+    printf 'Name the session directory, or use a longer form of the id.\n' >&2
+  else
+    printf 'questions: no note with id %s\n' "$2" >&2
+  fi
+  return 0
 }
 titleof() { sed -n '1s/^# //p' "$1" 2>/dev/null; }
 statusof() { s=$(get_field "$1" status); [ -n "$s" ] || s=open; printf '%s' "$s"; }
@@ -155,7 +186,7 @@ list)
 # -----------------------------------------------------------------------------
 answer)
   [ -n "$ID" ] && [ -n "$TEXT" ] || { echo 'questions: usage: questions answer <id> "<text>"' >&2; exit 2; }
-  f=$(find_note "$ID") || { echo "questions: no note with id $ID" >&2; exit 2; }
+  f=$(find_note "$ID") || { note_lookup_failed "$?" "$ID" "$f"; exit 2; }
   # The answer is appended to the note itself rather than stored beside it, so
   # the question and what came back are one artefact and cannot drift apart.
   printf '\n## Answer\n\n_recorded %s_\n\n%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" "$TEXT" >> "$f"
@@ -167,7 +198,7 @@ answer)
 
 close)
   [ -n "$ID" ] || { echo "questions: usage: questions close <id> [--reason ...]" >&2; exit 2; }
-  f=$(find_note "$ID") || { echo "questions: no note with id $ID" >&2; exit 2; }
+  f=$(find_note "$ID") || { note_lookup_failed "$?" "$ID" "$f"; exit 2; }
   set_field "$f" status closed
   set_field "$f" closed-reason "$REASON"
   set_field "$f" closed-at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -253,7 +284,7 @@ name)
 
 show)
   [ -n "$ID" ] || usage 2
-  f=$(find_note "$ID") || { echo "questions: no note with id $ID" >&2; exit 2; }
+  f=$(find_note "$ID") || { note_lookup_failed "$?" "$ID" "$f"; exit 2; }
   cat "$f"
   ;;
 esac
