@@ -105,19 +105,28 @@ backlog-watch --interval 120
 ```
 
 Run it **as a background command the harness owns**, not in the foreground. It exits on the
-first unseen event and prints it along with the queue and the gate, so the resumed turn has the
+first unseen change and prints it along with the ranked queue, so the resumed turn has the
 ranked work in front of it rather than having to go and ask.
 
-It watches six things because no smaller set is sufficient:
+It watches the **backlog**, through the provider seam — so it works on whatever `PM_PROVIDER`
+selects, not only GitHub:
 
 | | |
 | --- | --- |
-| issue `updatedAt` | new issues, comments, labels, closes — and the only way a *new* issue with no comments announces itself |
-| PR timeline | registers only some reviews, no inline comments |
-| PR reviews | a review without inline comments lives only here |
-| PR comments | an inline review comment lives only here |
-| check runs | CI, which is evented on **failure only** — a run turning green is delivered to nobody |
-| base tip | a merge grays every open PR's button and emits nothing anywhere |
+| a number that was not there | a new issue, including one with no comments yet — nothing else announces that |
+| a changed `updatedAt` | a comment, a label, an edit |
+| a number that has gone | a close, which is usually somebody answering or work landing |
+
+**Pull requests are not its business.** They are `devloop`'s layer and have their own seam —
+`pr-watch --all`, `PR_WATCH_PROVIDER`. An earlier draft of this watched PR timelines, review
+comments, check runs and the base tip by calling `gh` directly; the seam test refused it, and
+it was right to. That is the hardcoded-GitHub shape this plugin spent a release removing.
+
+So a tick waits on both: `backlog-watch` for the backlog, `pr-watch --wait` for a PR in flight.
+
+**An unreachable backend exits 2, never 0.** A backend that cannot be reached is not a quiet
+backlog, and treating it as one is how a loop sleeps through an outage and reports itself
+healthy.
 
 **Why a watcher rather than remembering to re-arm.** The tick's last step used to be "re-arm
 the timer", and re-arming was the agent remembering. Miss once and the session goes quiet: no
