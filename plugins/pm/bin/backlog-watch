@@ -1,0 +1,148 @@
+#!/bin/sh
+# Wait until the repo has something for the loop, then exit so the turn resumes.
+#
+#   backlog-watch                      # poll until something happens
+#   backlog-watch --interval 120       # seconds between polls (default 300)
+#   backlog-watch --max-wait 1800      # give up quietly after this (default 3500)
+#   backlog-watch --state DIR          # where "already seen" lives
+#   backlog-watch --repo o/n
+#
+# Exit: 0 always -- either something happened (printed, with the queue and the
+# gate) or the wait expired quietly. Both mean "re-arm me". 2 for usage.
+#
+# WHY THIS EXISTS, rather than a sleep in the loop:
+#
+# An unattended loop's last step is "re-arm the timer", and re-arming is the
+# agent remembering to. Miss it once and the session goes quiet -- no prompt, no
+# error, just work that stopped. From outside, "waiting" and "stuck" are the
+# same picture. This makes the wait a process the harness owns: it ends, the
+# turn resumes, and the resumed turn is handed what changed.
+#
+# It exits on the FIRST unseen event rather than batching, because the point is
+# to get back to work, not to collect a complete report.
+#
+# WHAT IT WATCHES, and why each one is needed:
+#
+#   issues updatedAt   new issues, new comments, labels, closes. One field
+#                      covers all of it, and it is the only way a NEW issue
+#                      with no comments announces itself
+#   pr timeline        registers only some reviews, and no inline comments
+#   pr reviews         a review without inline comments lives only here
+#   pr comments        an inline review comment lives only here
+#   check runs         CI, which is evented on failure ONLY -- a run turning
+#                      green is delivered to nobody
+#   base tip           a merge to the base branch grays every open PR's merge
+#                      button and emits nothing anywhere
+set -u
+
+REPO=""; INTERVAL=300; MAXWAIT=3500; STATE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)     REPO=${2:?}; shift 2 ;;
+    --interval) INTERVAL=${2:?}; shift 2 ;;
+    --max-wait) MAXWAIT=${2:?}; shift 2 ;;
+    --state)    STATE=${2:?}; shift 2 ;;
+    -h|--help)  sed -n '2,12p' "$0"; exit 0 ;;
+    *) echo "backlog-watch: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+command -v gh >/dev/null 2>&1 || { echo "backlog-watch: gh is not installed" >&2; exit 2; }
+
+# Default state under the session, not the repo: two agents watching the same
+# repo have different ideas of what they have already seen, and sharing the file
+# means the second one is told nothing happened.
+if [ -z "$STATE" ]; then
+  _sid=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-unsessioned}}
+  STATE=${CLAUDE_WATCH_DIR:-$HOME/.claude/backlog-watch}/$_sid
+fi
+mkdir -p "$STATE" 2>/dev/null || { echo "backlog-watch: cannot create $STATE" >&2; exit 2; }
+: >> "$STATE/ids"
+
+if [ -z "$REPO" ]; then
+  REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)
+  [ -n "$REPO" ] || { echo "backlog-watch: no --repo and none inferable here" >&2; exit 2; }
+fi
+
+BASE=$(gh repo view "$REPO" --json defaultBranchRef -q .defaultBranchRef.name 2>/dev/null)
+[ -n "$BASE" ] || BASE=main
+
+seen() { grep -qxF "$1" "$STATE/ids" 2>/dev/null; }
+mark() { printf '%s\n' "$1" >> "$STATE/ids"; }
+
+# A first run marks everything and emits nothing. Without this, re-arming after
+# a quiet exit replays the entire backlog as news every single time.
+first=0
+[ -s "$STATE/ids" ] || first=1
+
+DEADLINE=$(( $(date +%s) + MAXWAIT ))
+emit=""
+
+while :; do
+  # --- issues --------------------------------------------------------------
+  # --state all, not open: a close is activity worth waking for, and an issue
+  # closed between polls would otherwise vanish with nothing said.
+  gh issue list --repo "$REPO" --state all --limit 100 \
+     --json number,updatedAt,title,state \
+     -q '.[] | "\(.number)\t\(.updatedAt)\t\(.state)\t\(.title)"' 2>/dev/null > "$STATE/now"
+  while IFS="$(printf '\t')" read -r n upd st title; do
+    [ -n "${n:-}" ] || continue
+    key="issue:$n:$upd"
+    seen "$key" && continue
+    mark "$key"
+    [ "$first" -eq 1 ] && continue
+    # A number never seen under ANY timestamp is new; otherwise it moved.
+    if grep -q "^issue:$n:" "$STATE/prev" 2>/dev/null; then
+      emit="$emit
+EVENT issue#$n $st updated — $title"
+    else
+      emit="$emit
+EVENT issue#$n NEW ($st) — $title"
+    fi
+  done < "$STATE/now"
+  cp "$STATE/ids" "$STATE/prev" 2>/dev/null || :
+
+  # --- open PRs this agent owns --------------------------------------------
+  open=$(gh pr list --repo "$REPO" --author "@me" --state open --json number -q '.[].number' 2>/dev/null)
+  for n in $open; do
+    sha=$(gh pr view "$n" --repo "$REPO" --json headRefOid -q .headRefOid 2>/dev/null)
+    for src in "issues/$n/timeline" "pulls/$n/reviews" "pulls/$n/comments"; do
+      for id in $(gh api "repos/$REPO/$src" --paginate -q '.[].id' 2>/dev/null); do
+        key="$n:$src:$id"
+        seen "$key" || { mark "$key"; [ "$first" -eq 0 ] && emit="$emit
+EVENT pr#$n $src id=$id"; }
+      done
+    done
+    for id in $(gh api "repos/$REPO/commits/$sha/check-runs" \
+                  -q '.check_runs[] | "\(.id):\(.status):\(.conclusion // "none")"' 2>/dev/null); do
+      key="$n:check:$id"
+      seen "$key" || { mark "$key"; [ "$first" -eq 0 ] && emit="$emit
+EVENT pr#$n check $id"; }
+    done
+  done
+
+  # --- the base tip ---------------------------------------------------------
+  tip=$(gh api "repos/$REPO/git/refs/heads/$BASE" -q .object.sha 2>/dev/null)
+  if [ -n "$tip" ]; then
+    key="base:$tip"
+    seen "$key" || { mark "$key"; [ "$first" -eq 0 ] && emit="$emit
+EVENT $BASE moved to $(printf '%.7s' "$tip") — any open PR may now be BEHIND"; }
+  fi
+
+  if [ -n "$emit" ]; then
+    printf '%s\n' "$emit" | sed '/^$/d'
+    # The waking turn gets the ranked work and the gate WITH the event, so it
+    # does not have to go and ask before it can act.
+    if command -v backlog-queue >/dev/null 2>&1; then
+      echo "--- queue ---"; backlog-queue 2>&1 | head -20
+    fi
+    if [ -n "$open" ] && command -v pr-watch >/dev/null 2>&1; then
+      echo "--- gate ---"; pr-watch --all 2>&1
+    fi
+    exit 0
+  fi
+
+  first=0
+  [ "$(date +%s)" -ge "$DEADLINE" ] && { echo "WATCH: quiet, re-arm to continue."; exit 0; }
+  sleep "$INTERVAL"
+done
