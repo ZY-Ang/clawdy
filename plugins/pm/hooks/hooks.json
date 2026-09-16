@@ -1,5 +1,5 @@
 {
-  "description": "Refuse inline questions once work has started; point at ask-async instead.",
+  "description": "Refuse inline questions once work has started, and raw issue creation that bypasses file-issue; point at ask-async and file-issue instead.",
   "hooks": {
     "PreToolUse": [
       {
@@ -8,6 +8,15 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/hooks/deny-interrupt"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/deny-raw-issue-create"
           }
         ]
       }

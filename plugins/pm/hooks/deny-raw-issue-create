@@ -1,0 +1,84 @@
+#!/bin/sh
+# PreToolUse guard: refuse `gh issue create` / `glab issue create`, and point at
+# file-issue.
+#
+# file-issue REFUSES a task without --priority --urgency --size, and when they
+# are given it always attaches `task` plus all three. Every version on the
+# machine this was written for -- 0.21.0 through 0.30.0 -- refuses identically.
+#
+# The backend CLI attaches nothing and refuses nothing. So the second door into
+# the tracker produces exactly the issue the first door exists to prevent: open,
+# unlabelled, and invisible to `backlog-queue`, which skips anything without
+# axes. Three such issues were sitting in one repo when this was written, the
+# oldest nine days old, while the loop reported itself healthy.
+#
+# A convention cannot close this. The agent taking the shortcut does not know it
+# is one -- `gh issue create` is the obvious command and it works.
+#
+# Escape hatch: CLAUDE_ALLOW_RAW_ISSUE=1, per command. Not exported in a
+# profile, which would disable the guard permanently and silently.
+
+case "${CLAUDE_ALLOW_RAW_ISSUE:-}" in 1|true) exit 0 ;; esac
+
+INPUT=$(cat 2>/dev/null || true)
+[ -n "$INPUT" ] || exit 0
+
+CMD=""
+if command -v jq >/dev/null 2>&1; then
+  CMD=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // empty' 2>/dev/null || true)
+fi
+# Narrow sed fallback: a guard that stops guarding because jq is absent is the
+# worst of both. Only the command field, and only up to the closing quote.
+[ -z "$CMD" ] && CMD=$(printf '%s' "$INPUT" \
+  | sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+[ -n "$CMD" ] || exit 0
+
+# `gh issue create` with anything between, so `gh --repo x issue create` is
+# caught too. Not a bare "issue create": that appears in prose, in this file,
+# and in the message below.
+matches() {
+  case "$1" in
+    *gh\ issue\ create*|*glab\ issue\ create*) return 0 ;;
+    *gh\ *\ issue\ create*|*glab\ *\ issue\ create*) return 0 ;;
+  esac
+  return 1
+}
+matches "$CMD" || exit 0
+
+cat >&2 <<'MSG'
+Blocked: file issues through file-issue, not the backend CLI.
+
+`gh issue create` attaches no labels and enforces nothing, so what it files is
+open and invisible at the same time -- backlog-queue skips any issue with no
+priority, urgency or size, which is every issue this command produces.
+
+Use file-issue, which refuses to file a task without them:
+
+  file-issue task "one line saying what is wrong" \
+    --priority high|med|low \
+    --urgency high|low \
+    --size s|m|l \
+    --body "what you saw, where, and what it costs"
+
+For something only a human can decide, ask-async instead -- it shapes the
+question so the answer is a tick rather than an essay:
+
+  ask-async "the question, in one line" \
+    --blocked-on access|decision \
+    --context "what you were doing when it came up" \
+    --option "Label|why this one" \
+    --assume "what you are doing meanwhile"
+
+Both write to disk BEFORE touching the tracker, so a missing CLI or a dead
+network cannot lose the content. Exit 3 means exactly that: recorded locally,
+not filed. Carry on and run `questions sync` later.
+
+PM_REPO picks the destination repository; PM_PROVIDER picks the backend. Neither
+is inferred from the directory you happen to be standing in.
+
+If this really is the rare case that needs the raw command -- editing an issue,
+scripting a migration -- set it for that one command:
+
+  CLAUDE_ALLOW_RAW_ISSUE=1 gh issue create ...
+MSG
+exit 2
