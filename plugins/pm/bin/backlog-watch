@@ -1,0 +1,132 @@
+#!/bin/sh
+# Wait until the backlog has something for the loop, then exit so the turn resumes.
+#
+#   backlog-watch                      # poll until something happens
+#   backlog-watch --interval 120       # seconds between polls (default 300)
+#   backlog-watch --max-wait 1800      # give up quietly after this (default 3500)
+#   backlog-watch --state DIR          # where "already seen" lives
+#   backlog-watch --repo o/n
+#
+# Exit: 0 always -- either something happened (printed, with the queue) or the
+# wait expired quietly. Both mean "re-arm me". 2 for usage, or if the backend
+# could not be reached: an unreachable backend is never a quiet pass.
+#
+# WHY THIS EXISTS, rather than a sleep in the loop:
+#
+# An unattended loop's last step is "re-arm the timer", and re-arming is the
+# agent remembering to. Miss it once and the session goes quiet -- no prompt, no
+# error, just work that stopped. From outside, "waiting" and "stuck" are the
+# same picture. This makes the wait a process the harness owns: it ends, the
+# turn resumes, and the resumed turn is handed what changed.
+#
+# It exits on the FIRST unseen change rather than batching, because the point is
+# to get back to work, not to collect a complete report.
+#
+# THE BACKLOG ONLY. Pull requests are devloop's layer and have their own seam
+# (`pr-watch --all`, PR_WATCH_PROVIDER). An earlier draft of this watched PR
+# timelines and the base tip by calling `gh` directly, and the seam test caught
+# it -- correctly: that is the same hardcoded-GitHub shape this plugin spent a
+# release removing.
+set -eu
+
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PM_LIB=$HERE/../lib
+. "$PM_LIB/load-provider.sh"
+pm_load_provider || exit 2
+
+REPO=${PM_REPO:-}; INTERVAL=300; MAXWAIT=3500; STATE=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --repo)     REPO=${2:?}; shift 2 ;;
+    --interval) INTERVAL=${2:?}; shift 2 ;;
+    --max-wait) MAXWAIT=${2:?}; shift 2 ;;
+    --state)    STATE=${2:?}; shift 2 ;;
+    -h|--help)  sed -n '2,12p' "$0"; exit 0 ;;
+    *) echo "backlog-watch: unknown option $1" >&2; exit 2 ;;
+  esac
+done
+
+command -v jq >/dev/null 2>&1 || { echo "backlog-watch: jq is not installed" >&2; exit 2; }
+
+# State under the session, not the repo: two agents watching the same backlog
+# have different ideas of what they have already seen, and sharing one file
+# means the second is told nothing happened.
+if [ -z "$STATE" ]; then
+  _sid=${CLAUDE_CODE_SESSION_ID:-${CLAUDE_SESSION_ID:-unsessioned}}
+  STATE=${CLAUDE_WATCH_DIR:-$HOME/.claude/backlog-watch}/$_sid
+fi
+mkdir -p "$STATE" 2>/dev/null || { echo "backlog-watch: cannot create $STATE" >&2; exit 2; }
+: >> "$STATE/seen"
+
+# A first run records and emits nothing. Without it, every re-arm after a quiet
+# exit replays the whole backlog as news and the agent acts on an "event" that
+# is just the repository existing.
+first=0
+[ -s "$STATE/seen" ] || first=1
+
+DEADLINE=$(( $(date +%s) + MAXWAIT ))
+
+# `<number> <updatedAt>` per open issue, sorted, so two snapshots can be diffed.
+snapshot() {
+  _j=$(provider_issues "$REPO") || return 1
+  [ -n "$_j" ] || return 1
+  printf '%s' "$_j" | jq -r '.[] | "\(.number)\t\(.updatedAt // "-")\t\(.title // "-")"' \
+    2>/dev/null | sort -n
+}
+
+while :; do
+  snapshot > "$STATE/now" || {
+    # Never a quiet pass: a backend that cannot be reached is not a quiet
+    # backlog, and treating it as one is how a loop sleeps through an outage.
+    echo "backlog-watch: could not reach $(provider_name)" >&2
+    [ -n "${PROVIDER_ERR:-}" ] && printf '%s\n' "$PROVIDER_ERR" | sed 's/^/  /' >&2
+    exit 2
+  }
+
+  # number+updatedAt only. `seen` keeps the title too so a disappearance can be
+  # named, but comparing whole lines would report a retitle as an update and --
+  # worse -- reported EVERY issue as updated on every poll, because the stored
+  # line has three fields and the key built from it had two.
+  cut -f1,2 "$STATE/seen" > "$STATE/seen.keys" 2>/dev/null || : > "$STATE/seen.keys"
+
+  emit=""
+  if [ "$first" -eq 0 ]; then
+    while IFS="$(printf '\t')" read -r n upd title; do
+      [ -n "${n:-}" ] || continue
+      if ! grep -q "^$n	" "$STATE/seen" 2>/dev/null; then
+        emit="$emit
+EVENT issue#$n NEW — $title"
+      elif ! grep -qxF "$n	$upd" "$STATE/seen.keys" 2>/dev/null; then
+        emit="$emit
+EVENT issue#$n updated — $title"
+      fi
+    done < "$STATE/now"
+
+    # A number that was open and is not any more. The provider lists open
+    # issues only, so a close arrives as a disappearance -- and a close IS
+    # activity: it is usually somebody answering, or work landing.
+    while IFS="$(printf '\t')" read -r n upd title; do
+      [ -n "${n:-}" ] || continue
+      grep -q "^$n	" "$STATE/now" 2>/dev/null \
+        || emit="$emit
+EVENT issue#$n closed or no longer listed — $title"
+    done < "$STATE/seen"
+  fi
+
+  cp "$STATE/now" "$STATE/seen"
+
+  if [ -n "$emit" ]; then
+    printf '%s\n' "$emit" | sed '/^$/d'
+    # The waking turn gets the ranked work with the event, so it does not have
+    # to go and ask before it can act.
+    if command -v backlog-queue >/dev/null 2>&1; then
+      echo "--- queue ---"
+      backlog-queue 2>&1 | head -20 || true
+    fi
+    exit 0
+  fi
+
+  first=0
+  [ "$(date +%s)" -ge "$DEADLINE" ] && { echo "WATCH: quiet, re-arm to continue."; exit 0; }
+  sleep "$INTERVAL"
+done
