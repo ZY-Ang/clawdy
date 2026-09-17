@@ -404,6 +404,36 @@ case "$out" in *"ambiguous"*) ok "close refuses an ambiguous id" ;;
   && ok "and neither note was touched" \
   || bad "and neither note was touched" "note one was modified"
 
+# --- --needs-human on a task ---------------------------------------------------
+# The label follows who the item waits on. A task that blocks on a person but
+# needs a rich body can only be filed as a task, so the flag has to exist there.
+reset; : > "$GH_ARGS"; gh_rec
+call file-issue task "Pick a surface" $AX --needs-human --body "a comparison table" >/dev/null 2>&1
+create=$(grep '^issue create' "$GH_ARGS" 2>/dev/null | head -1)
+case "$create" in *"--label needs-human"*) ok "--needs-human labels the task needs-human" ;;
+  *) bad "--needs-human labels the task needs-human" "$create" ;; esac
+case "$create" in *"--label task"*) ok "and it is still a task" ;;
+  *) bad "and it is still a task" "$create" ;; esac
+case "$create" in *"--label priority-med"*) ok "and still carries the axes" ;;
+  *) bad "and still carries the axes" "$create" ;; esac
+
+reset; : > "$GH_ARGS"; gh_rec
+call file-issue task "Ordinary work" $AX --body b >/dev/null 2>&1
+create=$(grep '^issue create' "$GH_ARGS" 2>/dev/null | head -1)
+case "$create" in *needs-human*) bad "without the flag a task is not needs-human" "$create" ;;
+  *) ok "without the flag a task is not needs-human" ;; esac
+
+# A note that never reached the tracker must come back still waiting on a person.
+reset; gh_absent
+call file-issue task "Offline decision" $AX --needs-human --body b >/dev/null 2>&1
+if ingrep '^- needs-human: yes$'; then ok "the note records needs-human"
+else bad "the note records needs-human" "$(find "$TMP/notes" -name '*.md' -exec cat {} + 2>/dev/null)"; fi
+: > "$GH_ARGS"; gh_rec
+call questions sync >/dev/null 2>&1
+create=$(grep '^issue create' "$GH_ARGS" 2>/dev/null | head -1)
+case "$create" in *"--label needs-human"*) ok "sync replays needs-human" ;;
+  *) bad "sync replays needs-human" "$create" ;; esac
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)

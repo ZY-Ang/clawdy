@@ -157,7 +157,12 @@ size-s | size-m | size-l
 area-<thing>
 ```
 
-Plus three written by tooling and never by hand: `needs-human`, `claimed`, `finding`.
+Plus three written by tooling: `needs-human`, `claimed`, `finding`.
+
+**`needs-human` follows who the item waits on, not which command filed it.** `ask-async` and
+`file-issue question` always apply it. A task that waits on a person but needs a rich body —
+research, a comparison, evidence — gets it from `file-issue task --needs-human`. Labelling by
+hand stays the fallback for anything filed without the flag.
 
 **An unlabelled issue sorts second, not medium.** Treating a missing axis as medium keeps it from
 being *last*, and medium is exactly where things get buried — indistinguishable from work somebody
