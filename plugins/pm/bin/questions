@@ -244,6 +244,7 @@ sync)
       _v=$(get_field "$f" "$_ax")
       [ -n "$_v" ] && [ "$_v" != "-" ] && set -- "$@" "--$_ax" "$_v"
     done
+    [ "$(get_field "$f" needs-human)" = yes ] && [ "$kind" = task ] && set -- "$@" --needs-human
     # The note already knows where it belongs. persist_question recorded the
     # origin at ASK time; without this, sync sent the issue wherever the shell
     # was standing at SYNC time and then stamped the note `filed:` with that

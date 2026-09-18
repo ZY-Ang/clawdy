@@ -16,6 +16,11 @@
 #             which agents skip when picking up work, so it will not be started
 #             on a guess. This is the async inbox.
 #
+#   task --needs-human   a task that waits on a person but needs a rich body --
+#             research, a comparison, evidence -- that ask-async has no room
+#             for. Labelled `task` and `needs-human`. The label follows who the
+#             item waits on, not which subcommand filed it.
+#
 # A TASK MUST CARRY --priority, --urgency AND --size. That is not tidiness: the
 # queue ranks on exactly those three, and backlog-queue treats a missing one as
 # priority-med/size-m so that unlabelled work is never buried. Which means an
@@ -69,7 +74,7 @@ esac
 [ $# -ge 1 ] || { echo "file-issue: a title is required" >&2; exit 2; }
 TITLE=$1; shift
 
-BODY=""; REPO=${PM_REPO:-}; DRY=0; PRIORITY=""; URGENCY=""; SIZE=""; SEVERITY=""; AREA=""; AGENT_OVERRIDE=""
+BODY=""; REPO=${PM_REPO:-}; DRY=0; PRIORITY=""; URGENCY=""; SIZE=""; SEVERITY=""; AREA=""; AGENT_OVERRIDE=""; NEEDS_HUMAN=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --body) BODY=$2; shift 2 ;;
@@ -80,6 +85,7 @@ while [ $# -gt 0 ]; do
     --severity) SEVERITY=$2; shift 2 ;;
     --area)     AREA=$2;     shift 2 ;;
     --agent)    AGENT_OVERRIDE=$2; shift 2 ;;
+    --needs-human) NEEDS_HUMAN=1; shift ;;
     --dry-run) DRY=1; shift ;;
     *) echo "file-issue: unknown option '$1'" >&2; exit 2 ;;
   esac
@@ -156,7 +162,11 @@ if [ -n "$AGENT_LABEL" ] && ! agent_name_ok "$(agent_name)"; then
   exit 2
 fi
 
+HUMAN_LABEL=""
+[ "$NEEDS_HUMAN" -eq 1 ] && [ "$KIND" = task ] && HUMAN_LABEL=needs-human
+
 set -- --title "$TITLE" --label "$LABEL"
+[ -n "$HUMAN_LABEL" ] && set -- "$@" --label "$HUMAN_LABEL"
 [ -n "$AGENT_LABEL" ] && set -- "$@" --label "$AGENT_LABEL"
 for _extra in ${PRIORITY:+priority-$PRIORITY} ${URGENCY:+urgency-$URGENCY} \
               ${SIZE:+size-$SIZE} ${SEVERITY:+$SEVERITY} ${AREA:+area-$AREA} ; do
@@ -226,6 +236,7 @@ if [ -n "$NOTE" ]; then
   [ -n "$SIZE" ]     && set_field "$NOTE" size     "$SIZE"
   [ -n "$SEVERITY" ] && set_field "$NOTE" severity "$SEVERITY"
   [ -n "$AREA" ]     && set_field "$NOTE" area     "$AREA"
+  [ -n "$HUMAN_LABEL" ] && set_field "$NOTE" needs-human yes
 fi
 
 fallback() {
@@ -238,7 +249,7 @@ fallback() {
 
 provider_available || fallback "$(provider_name) is not available"
 
-LABELS="$LABEL ${PRIORITY:+priority-$PRIORITY} ${URGENCY:+urgency-$URGENCY} ${SIZE:+size-$SIZE} ${SEVERITY:+$SEVERITY} ${AREA:+area-$AREA} ${AGENT_LABEL}"
+LABELS="$LABEL ${PRIORITY:+priority-$PRIORITY} ${URGENCY:+urgency-$URGENCY} ${SIZE:+size-$SIZE} ${SEVERITY:+$SEVERITY} ${AREA:+area-$AREA} ${AGENT_LABEL} ${HUMAN_LABEL}"
 
 # Create every label the issue needs, not just the kind. Issue creation FAILS on
 # a label the repo does not have, so requiring the axes without creating them
