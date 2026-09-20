@@ -386,6 +386,53 @@ case "$out" in *sess-aaa*) case "$out" in *sess-zzz*) ok "both notes are named" 
 case "$out" in *"2 notes carry it"*) ok "the count matches what is listed" ;;
                *) bad "the count matches what is listed" "[$out]" ;; esac
 
+# --- the qualified form the refusal advises must actually resolve -------------
+# Until this existed the message said "name the session directory" and no such
+# form was implemented, so a duplicated note could not be shown, answered or
+# closed at all. The assertion is that the RIGHT note comes back -- checking
+# only that the error stopped would pass on that dead end too.
+out=$(q show sess-aaa/q-11111); rc=$?
+case "$out" in *"note one"*) ok "a UUID-qualified id resolves" ;;
+               *) bad "a UUID-qualified id resolves" "[$out]" ;; esac
+[ "$rc" -eq 0 ] && ok "and exits 0" || bad "and exits 0" "exit $rc"
+# The other half of the same collision, so this cannot pass by always picking
+# the first match.
+out=$(q show sess-zzz/q-11111)
+case "$out" in *"note two"*) ok "and the other session gets the other note" ;;
+               *) bad "and the other session gets the other note" "[$out]" ;; esac
+# The display name works too, which is the half a human would actually type --
+# a session UUID is not something anyone remembers. Without a case here the
+# label_for_dir branch is never exercised: sess-aaa is matched by its directory
+# name alone, so dropping display-name matching passed the whole suite.
+printf 'grafana-alerts\n' > "$D2/.name"
+out=$(q show grafana-alerts/q-11111)
+case "$out" in *"note two"*) ok "a display-name-qualified id resolves" ;;
+               *) bad "a display-name-qualified id resolves" "[$out]" ;; esac
+rm -f "$D2/.name"
+
+# A session that exists but does not hold that id is missing, not ambiguous.
+out=$(q show sess-zzz/q-22222 2>&1); rc=$?
+case "$out" in *"no note with id"*) ok "wrong session for a real id is missing" ;;
+               *) bad "wrong session for a real id is missing" "[$out]" ;; esac
+[ "$rc" -eq 2 ] && ok "and exits 2" || bad "and exits 2" "exit $rc"
+# The refusal must name the form that works, not one that does not exist.
+out=$(q show q-11111 2>&1)
+case "$out" in *"<session>/q-11111"*) ok "the refusal names the working form" ;;
+               *) bad "the refusal names the working form" "[$out]" ;; esac
+# close resolves through the same helper, so the qualified form must reach it.
+# Its own pair, not q-11111: closing that one would leave the later
+# ambiguous-close case asserting against a note this had already closed, which
+# is how the first version of these cases failed.
+mknote "$D1/2026-01-04-three-q-33333.md" "note three" q-33333
+mknote "$D2/2026-01-05-four-q-33333.md"  "note four"  q-33333
+q close sess-aaa/q-33333 --reason superseded >/dev/null 2>&1
+[ "$(sed -n 's/^- status: //p' "$D1/2026-01-04-three-q-33333.md")" = closed ] \
+  && ok "close accepts a qualified id" \
+  || bad "close accepts a qualified id" "note three still open"
+[ "$(sed -n 's/^- status: //p' "$D2/2026-01-05-four-q-33333.md")" = open ] \
+  && ok "and left the other session alone" \
+  || bad "and left the other session alone" "note four was modified"
+
 out=$(q show q-22222); rc=$?
 case "$out" in *solo*) ok "a unique id still resolves" ;;
                *) bad "a unique id still resolves" "[$out]" ;; esac

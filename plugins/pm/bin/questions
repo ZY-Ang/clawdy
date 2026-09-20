@@ -56,12 +56,28 @@ all_notes() { find "$QUESTIONS_DIR" -name '*.md' -type f 2>/dev/null | sort -r; 
 # the wrong note. Better minting makes that rare; it cannot make it impossible,
 # so the caller is told rather than guessed at.
 #
+# `<session>/<id>` narrows an ambiguous one, where <session> is the directory's
+# UUID or its display name. The refusal below has always told callers to "name
+# the session directory" -- and until this existed, nothing implemented that, so
+# a duplicated note could not be shown, answered or closed at all. Refusing was
+# right; advising a form that did not exist turned a wrong answer into a dead
+# end.
+#
 # Exit 0 one match (path on stdout) - 1 none - 3 several (paths on stdout).
 find_note() {
+  _want=$1; _sess=""
+  case "$_want" in
+    */*) _sess=${_want%/*}; _want=${_want##*/} ;;
+  esac
   _nl=$(mktemp); all_notes > "$_nl"
   _hits=$(mktemp)
   while IFS= read -r f; do
-    [ "$(get_field "$f" id)" = "$1" ] && printf '%s\n' "$f" >> "$_hits"
+    [ "$(get_field "$f" id)" = "$_want" ] || continue
+    if [ -n "$_sess" ]; then
+      _d=$(dirname "$f")
+      [ "$(basename "$_d")" = "$_sess" ] || [ "$(label_for_dir "$_d")" = "$_sess" ] || continue
+    fi
+    printf '%s\n' "$f" >> "$_hits"
   done < "$_nl"; rm -f "$_nl"
   _n=$(wc -l < "$_hits" | tr -d ' ')
   case "$_n" in
@@ -82,7 +98,8 @@ note_lookup_failed() {  # <rc> <id> <what find_note printed>
     printf 'questions: id %s is ambiguous -- %s notes carry it:\n' \
       "$2" "$(printf '%s\n' "$3" | wc -l | tr -d ' ')" >&2
     printf '%s\n' "$3" | sed 's|.*/questions/|  |' >&2
-    printf 'Name the session directory, or use a longer form of the id.\n' >&2
+    printf 'Qualify it with the session: questions <cmd> <session>/%s\n' "$2" >&2
+    printf 'The session is either directory name above, in full.\n' >&2
   else
     printf 'questions: no note with id %s\n' "$2" >&2
   fi
