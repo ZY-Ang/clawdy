@@ -83,6 +83,9 @@
 # Exit 2 blocks the turn and returns stderr to the model, which then rewrites
 # the message with URLs.
 
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$HERE/../lib/explain.sh"
+
 INPUT=$(cat 2>/dev/null || true)
 
 case "${CLAUDE_ALLOW_ASKING:-}" in 1|true) exit 0 ;; esac
@@ -166,9 +169,10 @@ REFS=$(printf '%s' "$TEXT" | awk '
 
 [ -n "$REFS" ] || exit 0
 
-cat >&2 <<MSG
-Blocked: this turn cites work by bare number ($REFS).
-
+explain no-bare-refs \
+  "this turn cites work by bare number ($REFS)." \
+  "Write the full URL instead: https://github.com/OWNER/REPO/issues/64, not #64." \
+  "CLAUDE_REFERENCE_LINKS=1 (this terminal renders them clickable), CLAUDE_ALLOW_ASKING=1 (this turn is deliberately about the guards)" <<MSG
 A reader cannot tell what repository a bare #55 belongs to, and cannot click
 it. Write the full URL instead:
 

@@ -38,6 +38,9 @@
 # Escape: CLAUDE_ALLOW_ASKING=1, shared with the sibling hook -- one switch for
 # "this turn is deliberately about the guards", not two to remember.
 
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$HERE/../lib/explain.sh"
+
 INPUT=$(cat 2>/dev/null || true)
 
 case "${CLAUDE_ALLOW_ASKING:-}" in 1|true) exit 0 ;; esac
@@ -198,9 +201,10 @@ fi
 
 [ -n "$hit" ] || exit 0
 
-cat >&2 <<MSG
-Blocked: this turn ends by announcing work rather than reporting it ("$hit").
-
+explain no-announced-work \
+  "this turn ends by announcing work rather than reporting it (\"$hit\")." \
+  "Do it, then say what you did -- or arm a monitor, a backgrounded command or a scheduled check-in, which exempts the turn automatically." \
+  "CLAUDE_ALLOW_ASKING=1 (this turn is deliberately about the guards)" <<MSG
 Nothing will resume this turn. Only a user message, a scheduled wakeup or a
 background-task notification starts one, and none is armed -- so the sentence
 above describes work that is not going to happen.

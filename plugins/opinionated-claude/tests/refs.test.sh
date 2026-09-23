@@ -9,6 +9,8 @@ HOOK=$HERE/../hooks/no-bare-refs
 TMP=${TMPDIR:-/tmp}/refs-test.$$
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT INT TERM
+# Hermetic: the hooks remember which of them have already explained themselves.
+CLAUDE_HOOK_STATE_DIR=$TMP/explained; export CLAUDE_HOOK_STATE_DIR
 command -v jq >/dev/null 2>&1 || { echo "refs.test: jq required" >&2; exit 1; }
 
 fails=0 ran=0

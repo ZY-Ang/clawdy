@@ -21,6 +21,9 @@
 # Escape: CLAUDE_ALLOW_ASKING=1 for the genuine case -- something irreversible,
 # or outside what was asked for. Per command, never exported.
 
+HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+. "$HERE/../lib/explain.sh"
+
 INPUT=$(cat 2>/dev/null || true)
 
 case "${CLAUDE_ALLOW_ASKING:-}" in 1|true) exit 0 ;; esac
@@ -111,9 +114,10 @@ if [ -z "$hit" ]; then
 fi
 [ -n "$hit" ] || exit 0
 
-cat >&2 <<MSG
-Blocked: this turn ends by asking permission ("$hit").
-
+explain no-permission-asking \
+  "this turn ends by asking permission (\"$hit\")." \
+  "The request already implied the work: do it, then report what you did. Where the uncertainty is real, name the reading you took and keep going." \
+  "CLAUDE_ALLOW_ASKING=1 (this turn is deliberately about the guards)" <<MSG
 The work was already implied by the request. Asking costs a full round trip and
 answers itself -- the change is worthless sitting on a branch, and the reply is
 going to be "yes".
