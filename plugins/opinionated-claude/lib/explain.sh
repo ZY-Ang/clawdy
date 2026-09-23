@@ -20,6 +20,17 @@
 
 # explain <hook> <what happened> <the fix> <escapes>   -- long form on stdin
 #
+# THE FIX MUST STAND ALONE. Not "see above", not a hint -- enough that a reader
+# holding nothing but that one line corrects correctly, including whatever it
+# would otherwise over-correct. The long form is a courtesy, not the contract.
+#
+# Because a compaction happens in place: same session, same transcript path, so
+# the state file below survives it while the rationale it recorded is summarised
+# out of the model's context. After that the model only ever sees the short
+# form. Detecting the compaction and re-emitting was considered and dropped --
+# the model acts on the short form either way, so hardening the short form is
+# the same fix with none of the machinery.
+#
 # The escapes are named in the SHORT form and not the long one, because the long
 # one already lists them -- and a second block is exactly when a turn writing
 # about a guard needs the way out.

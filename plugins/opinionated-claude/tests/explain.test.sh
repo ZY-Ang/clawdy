@@ -97,6 +97,32 @@ r=$(block "$REFS" r1)
 case "$r" in *"A reader cannot tell"*) ok "each hook explains itself once" ;;
              *) bad "each hook explains itself once" "$r" ;; esac
 
+# --- the short form has to stand alone ---------------------------------------
+#
+# A compaction happens in place -- same session, same transcript path -- so the
+# state file survives it and the rationale it recorded does not. After one, the
+# model only ever sees the short form, holding nothing else. So each fix line
+# has to carry the facts a reader cannot infer: not just what to write instead,
+# but why the obvious alternative fails, and what it must NOT over-correct.
+short() { block "$1" "$2" >/dev/null; block "$1" "$2"; }
+
+a=$(short "$HOOK" s1)
+case "$a" in *"Nothing resumes this turn"*)
+    ok "short form: says why deferring fails" ;;
+  *) bad "short form: says why deferring fails" "$a" ;; esac
+case "$a" in *HUMAN*) ok "short form: and what not to over-correct" ;;
+             *) bad "short form: and what not to over-correct" "$a" ;; esac
+
+session p1 "Want me to open a PR?"
+p=$(short "$HERE/../hooks/no-permission-asking" p1)
+case "$p" in *ask-async*) ok "short form: names the non-blocking route out" ;;
+             *) bad "short form: names the non-blocking route out" "$p" ;; esac
+
+session r2 "Filed #64."
+q=$(short "$REFS" r2)
+case "$q" in *https://*) ok "short form: shows the replacement, not just the rule" ;;
+             *) bad "short form: shows the replacement, not just the rule" "$q" ;; esac
+
 # --- the long form on demand -------------------------------------------------
 v=$(CLAUDE_HOOK_VERBOSE=1 block "$HOOK" s1)
 case "$v" in *"Nothing will resume this turn"*) ok "CLAUDE_HOOK_VERBOSE=1 brings it back" ;;
