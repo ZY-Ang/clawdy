@@ -85,6 +85,15 @@ Two exemptions, both load-bearing:
 outside what was asked. Per command — exporting it in a profile disables the rule permanently and
 silently.
 
+## A block explains itself once
+
+A hook's full rationale is written for the model, but a Stop hook's stderr goes to the transcript,
+so the human pays for every word of it on every block. The same thirty-five lines, several times a
+session, bury the one thing that changed: which rule fired and what to do.
+
+So each hook prints its rationale on its **first** block of a session and three lines after that —
+the rule, the fix, and the escapes. `CLAUDE_HOOK_VERBOSE=1` prints the long form every time.
+
 ## Install
 
 ```bash

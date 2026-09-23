@@ -10,6 +10,8 @@ HOOK=$HERE/../hooks/no-permission-asking
 TMP=${TMPDIR:-/tmp}/asking-test.$$
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT INT TERM
+# Hermetic: the hooks remember which of them have already explained themselves.
+CLAUDE_HOOK_STATE_DIR=$TMP/explained; export CLAUDE_HOOK_STATE_DIR
 command -v jq >/dev/null 2>&1 || { echo "asking.test: jq required" >&2; exit 1; }
 
 fails=0 ran=0
@@ -152,8 +154,10 @@ if printf '' | sh "$HOOK" >/dev/null 2>&1
 then ok "empty input stands down"; else fails=$((fails+1)); printf 'FAIL empty input stands down\n'; fi
 
 # --- the message has to say what to do instead --------------------------------
-printf '%s' "Want me to?" | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/t.jsonl"
-out=$(printf '{"transcript_path":"%s"}' "$TMP/t.jsonl" | sh "$HOOK" 2>&1 >/dev/null)
+# Its own transcript, because the long form is printed on a hook's FIRST block in
+# a session and everything above has already spent this suite's.
+printf '%s' "Want me to?" | jq -Rs '{type:"assistant",message:{content:[{type:"text",text:.}]}}' > "$TMP/msg.jsonl"
+out=$(printf '{"transcript_path":"%s"}' "$TMP/msg.jsonl" | sh "$HOOK" 2>&1 >/dev/null)
 case "$out" in *'Pushed, PR #12'*) ok "shows the replacement phrasing" ;; *) bad "shows the replacement phrasing" ;; esac
 case "$out" in *ask-async*) ok "and the escape for a real blocker" ;; *) bad "and the escape for a real blocker" ;; esac
 # The mention case: a message ABOUT the guard trips it, and the block must say
