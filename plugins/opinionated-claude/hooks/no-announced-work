@@ -203,7 +203,7 @@ fi
 
 explain no-announced-work \
   "this turn ends by announcing work rather than reporting it (\"$hit\")." \
-  "Do it, then say what you did -- or arm a monitor, a backgrounded command or a scheduled check-in, which exempts the turn automatically." \
+  "Nothing resumes this turn, so a stated next step is work that will not happen: do it, then say what you did. If it cannot finish here, arm something that comes back to it -- a monitor, a backgrounded command, a scheduled check-in -- which exempts the turn automatically. Telling the HUMAN what to do next is not blocked; only a first-person promise about your own next action is." \
   "CLAUDE_ALLOW_ASKING=1 (this turn is deliberately about the guards)" <<MSG
 Nothing will resume this turn. Only a user message, a scheduled wakeup or a
 background-task notification starts one, and none is armed -- so the sentence

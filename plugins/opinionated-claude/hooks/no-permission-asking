@@ -116,7 +116,7 @@ fi
 
 explain no-permission-asking \
   "this turn ends by asking permission (\"$hit\")." \
-  "The request already implied the work: do it, then report what you did. Where the uncertainty is real, name the reading you took and keep going." \
+  "The request already implied the work: do it, then report what you did. Where the uncertainty is real, take the most reasonable reading, say which you took, and keep going. If no reading is safe, file the question -- ask-async \"<question>\" --blocked-on decision -- and carry on; ending the turn on a question is the one thing that does not work." \
   "CLAUDE_ALLOW_ASKING=1 (this turn is deliberately about the guards)" <<MSG
 The work was already implied by the request. Asking costs a full round trip and
 answers itself -- the change is worthless sitting on a branch, and the reply is
