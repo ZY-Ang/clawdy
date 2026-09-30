@@ -151,6 +151,80 @@ printf '%s' "$CLEAN" > "$TMP/i.json"
 printf 'not json' > "$TMP/d.json"
 [ "$(rcd --only cycles)" -eq 2 ] && ok "an unreadable deps file -> 2" || bad "bad deps -> 2" "$(td --only cycles)"
 
+# --- saturation ----------------------------------------------------------------
+# A band holding most of the queue produces an order that looks ranked and is
+# not: inside one band priority separates nothing, so what is left is the
+# tie-breaks, ending in issue number -- the arrival order the queue replaces.
+#
+# Six competing issues at BACKLOG_NOW (2026-08-20): two labelled high, two that
+# arrived below and aged past the 21-day step, two that stay low.
+sat() {
+  cat > "$TMP/i.json" <<'JSON'
+[{"number":1,"title":"labelled high","state":"OPEN","createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:00:00Z","comments":[],"blockedBy":[],
+  "labels":[{"name":"task"},{"name":"urgency-low"},{"name":"size-s"},{"name":"priority-high"}]},
+ {"number":2,"title":"labelled high too","state":"OPEN","createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:00:00Z","comments":[],"blockedBy":[],
+  "labels":[{"name":"task"},{"name":"urgency-low"},{"name":"size-s"},{"name":"priority-high"}]},
+ {"number":3,"title":"arrived medium","state":"OPEN","createdAt":"2026-05-01T00:00:00Z","updatedAt":"2026-05-01T00:00:00Z","comments":[],"blockedBy":[],
+  "labels":[{"name":"task"},{"name":"urgency-low"},{"name":"size-s"},{"name":"priority-med"}]},
+ {"number":4,"title":"arrived low","state":"OPEN","createdAt":"2026-05-01T00:00:00Z","updatedAt":"2026-05-01T00:00:00Z","comments":[],"blockedBy":[],
+  "labels":[{"name":"task"},{"name":"urgency-low"},{"name":"size-s"},{"name":"priority-low"}]},
+ {"number":5,"title":"stays low","state":"OPEN","createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:00:00Z","comments":[],"blockedBy":[],
+  "labels":[{"name":"task"},{"name":"urgency-low"},{"name":"size-s"},{"name":"priority-low"}]},
+ {"number":6,"title":"also low","state":"OPEN","createdAt":"2026-08-19T00:00:00Z","updatedAt":"2026-08-19T00:00:00Z","comments":[],"blockedBy":[],
+  "labels":[{"name":"task"},{"name":"urgency-low"},{"name":"size-s"},{"name":"priority-low"}]}]
+JSON
+}
+
+sat
+[ "$(rc --only saturation)" -eq 1 ] && ok "a crowded top band exits 1" || bad "saturation -> 1" "$(t --only saturation)"
+case "$(t --only saturation)" in *"4 of 6 competing issues (66%)"*) ok "and counts the band against the queue" ;;
+  *) bad "counts the band" "$(t --only saturation)" ;; esac
+
+# The number the decision actually turns on. Ageing promotes INTO the top band
+# and caps there, so a band fills by design -- and a report that does not
+# separate the two makes that look like people over-labelling.
+case "$(t --only saturation)" in *"2 of them were labelled lower and aged into it"*)
+    ok "and says how many got there by ageing rather than by label" ;;
+  *) bad "names the aged-in count" "$(t --only saturation)" ;; esac
+case "$(t --only saturation)" in *"#3  priority-med + 111d"*) ok "and shows the label it arrived with" ;;
+  *) bad "shows arrival label and age" "$(t --only saturation)" ;; esac
+
+# --- the other direction, which is what stops it being a check that always fires
+# Same six issues with the two old ones young: a normal spread, nothing to say.
+sed 's/2026-05-01/2026-08-19/g' "$TMP/i.json" > "$TMP/spread.json" && mv "$TMP/spread.json" "$TMP/i.json"
+[ "$(rc --only saturation)" -eq 0 ] && ok "a spread across bands is silent" || bad "spread -> 0" "$(t --only saturation)"
+
+# A small backlog is 100% of something and means nothing by it.
+printf '%s' "$CLEAN" > "$TMP/i.json"
+[ "$(rc --only saturation)" -eq 0 ] && ok "one issue at the top is not saturation" || bad "below the floor -> 0" "$(t --only saturation)"
+sat
+[ "$(BACKLOG_ISSUES_JSON=$TMP/i.json SATURATION_MIN=99 sh "$BIN" --only saturation >/dev/null 2>&1; echo $?)" -eq 0 ] \
+  && ok "SATURATION_MIN raises the floor" || bad "SATURATION_MIN honoured"
+[ "$(BACKLOG_ISSUES_JSON=$TMP/i.json SATURATION_PCT=90 sh "$BIN" --only saturation >/dev/null 2>&1; echo $?)" -eq 0 ] \
+  && ok "SATURATION_PCT raises the bar" || bad "SATURATION_PCT honoured"
+# The ageing step is backlog-queue's, read from the same variable so the two
+# cannot disagree about the order being described.
+[ "$(BACKLOG_ISSUES_JSON=$TMP/i.json ESCALATE_DAYS=999 sh "$BIN" --only saturation >/dev/null 2>&1; echo $?)" -eq 0 ] \
+  && ok "a longer ESCALATE_DAYS ages nobody in" || bad "ESCALATE_DAYS honoured" \
+     "$(BACKLOG_ISSUES_JSON=$TMP/i.json ESCALATE_DAYS=999 sh "$BIN" --only saturation 2>&1)"
+
+# --- what does not compete for queue position ---------------------------------
+# Counting these measures a list nobody is waiting on, and dilutes the share
+# with work that is already moving.
+for excluded in claimed finding needs-human; do
+  sat
+  jq --arg l "$excluded" '(.[] | select(.number == 5) | .labels) += [{"name":$l}]' \
+     "$TMP/i.json" > "$TMP/x.json" && mv "$TMP/x.json" "$TMP/i.json"
+  case "$(t --only saturation)" in *"of 5 competing issues"*) ok "$excluded does not compete" ;;
+    *) bad "$excluded excluded" "$(t --only saturation)" ;; esac
+done
+
+sat
+[ "$(BACKLOG_ISSUES_JSON=$TMP/i.json SATURATION_PCT=0 sh "$BIN" >/dev/null 2>&1; echo $?)" -eq 2 ] \
+  && ok "SATURATION_PCT outside 1..100 -> 2" || bad "SATURATION_PCT validated"
+[ "$(BACKLOG_ISSUES_JSON=$TMP/i.json ESCALATE_DAYS=0 sh "$BIN" >/dev/null 2>&1; echo $?)" -eq 2 ] \
+  && ok "ESCALATE_DAYS below 1 -> 2" || bad "ESCALATE_DAYS validated"
+
 # --- flags --------------------------------------------------------------------
 printf '%s' "$CLEAN" > "$TMP/i.json"
 [ "$(rc --only nope)" -eq 2 ] && ok "an unknown --only value -> 2" || bad "bad --only -> 2"
