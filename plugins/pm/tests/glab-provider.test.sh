@@ -57,7 +57,7 @@ case "\$1" in
   mr)
     case "\$2" in
       create) echo "https://gitlab.com/owner/repo/-/merge_requests/77" ;;
-      list)   cat "$FIX/mrs-gitlab-shape.json" ;;
+      list)   if [ -n "\${FAKE_GLAB_MRS:-}" ]; then cat "\$FAKE_GLAB_MRS"; else cat "$FIX/mrs-gitlab-shape.json"; fi ;;
     esac ;;
   issue)
     case "\$2" in
@@ -466,6 +466,23 @@ case "$l" in *"mr create -s feat/x -b main -t Draft MR -d the body --draft -y -R
 n=$(run provider_find_pr feat/x owner/repo)
 [ "$n" = "3771" ] && ok "find-pr reads iid from the real mr-list wire shape" || bad "find-pr" "$n"
 run provider_find_pr feat/x >/dev/null 2>&1 && ok "find-pr works without a repo argument" || bad "find-pr no repo"
+
+# --- what a claim's MR is doing ------------------------------------------------
+act=$(run provider_pr_activity feat/x owner/repo)
+[ "$act" = "$(printf 'true\t2026-08-21T21:22:51.424Z')" ] \
+  && ok "pr-activity reads draft and updated_at from the real mr-list wire shape" || bad "pr-activity" "$act"
+# Older GitLab spells a draft work_in_progress, with draft absent.
+jq '[.[0] | del(.draft) | .work_in_progress = true]' "$FIX/mrs-gitlab-shape.json" > "$TMP/mrs-wip.json"
+act=$(FAKE_GLAB_MRS="$TMP/mrs-wip.json" run provider_pr_activity feat/x owner/repo)
+case "$act" in true*) ok "work_in_progress counts as a draft" ;; *) bad "wip is a draft" "$act" ;; esac
+jq '[.[0] | .draft = false]' "$FIX/mrs-gitlab-shape.json" > "$TMP/mrs-ready.json"
+act=$(FAKE_GLAB_MRS="$TMP/mrs-ready.json" run provider_pr_activity feat/x owner/repo)
+case "$act" in false*) ok "a ready MR is not a draft" ;; *) bad "ready MR" "$act" ;; esac
+echo '[]' > "$TMP/mrs-none.json"
+act=$(FAKE_GLAB_MRS="$TMP/mrs-none.json" run provider_pr_activity feat/x owner/repo); r=$?
+[ "$r" -eq 0 ] && [ -z "$act" ] && ok "no MR on the branch is empty output and success" || bad "no MR" "rc=$r [$act]"
+( FAKE_GLAB_FAIL=1 run provider_pr_activity feat/x owner/repo ) >/dev/null 2>&1
+[ $? -ne 0 ] && ok "a failing glab is not 'no MR'" || bad "pr-activity failure is a failure"
 
 # --- the backend's own words are never discarded -----------------------------
 out=$(FAKE_GLAB_FAIL=1 run provider_issues owner/repo 2>&1)
