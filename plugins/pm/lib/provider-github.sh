@@ -149,8 +149,9 @@ provider_open_draft_pr() {
 provider_find_pr() {
   _branch=${1:?}; _repo=${2:-}
   # shellcheck disable=SC2086
-  gh pr list --head "$_branch" --state open --json number \
-     ${_repo:+--repo "$_repo"} 2>/dev/null | jq -r '.[0].number // empty' 2>/dev/null
+  _out=$(gh pr list --head "$_branch" --state open --json number \
+           ${_repo:+--repo "$_repo"} 2>/dev/null) || return 1
+  printf '%s' "$_out" | jq -r '.[0].number // empty' 2>/dev/null
 }
 
 # provider_pr_activity <branch> [repo] -> "<draft>\t<updatedAt>" for the open PR

@@ -34,7 +34,8 @@ cat > "$TMP/bin/gh" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$GH_CALLS"
 case "$1 $2" in
-  "pr list")   [ "${GH_PR_EXISTS:-0}" = 1 ] && echo '[{"number":7}]' || echo '[]' ;;
+  "pr list")   [ "${GH_PR_LIST_FAIL:-0}" = 1 ] && { echo "gh: HTTP 502" >&2; exit 1; }
+               [ "${GH_PR_EXISTS:-0}" = 1 ] && echo '[{"number":7}]' || echo '[]' ;;
   "pr create") echo "https://github.com/o/n/pull/9" ;;
   "issue view") cat "$GH_ISSUE" ;;
   *) : ;;
@@ -249,6 +250,20 @@ case "$out" in
   *"would claim #42"*) ok "with no --repo the cwd remains the destination" ;;
   *) bad "with no --repo the cwd remains the destination" "did it run? [$out]" ;;
 esac
+
+# --- "could not ask" is not "no PR" -------------------------------------------
+# Reading a failed lookup as "no PR" walks straight on to opening one, for a
+# branch that may already have it -- and the backend's refusal then blames the
+# create, not the lookup that actually failed.
+mkrepo; issue "$OPEN"
+export GH_PR_LIST_FAIL=1
+out=$(claim 42); r=$?
+unset GH_PR_LIST_FAIL
+[ "$r" -eq 2 ] && ok "a PR lookup that fails exits 2" || bad "failed lookup -> 2" "rc=$r $out"
+case "$out" in *"could not ask"*) ok "and says the lookup failed, not the create" ;;
+  *) bad "names the lookup" "$out" ;; esac
+if grep -q "pr create" "$CALLS"; then bad "a failed lookup went on to open a PR" "$(cat "$CALLS")"
+else ok "and never goes on to open a PR"; fi
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
