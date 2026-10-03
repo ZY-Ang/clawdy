@@ -66,7 +66,7 @@ for fn in provider_name provider_pr_ref_mark provider_available \
           provider_close_issue provider_issue_labels provider_needs_human \
           provider_ensure_label provider_link provider_unlink \
           provider_issue_id provider_blocked_by provider_open_draft_pr \
-          provider_find_pr provider_supports_deps ; do
+          provider_find_pr provider_pr_activity provider_supports_deps ; do
   if grep -q "^$fn()" "$LIB/provider-github.sh"; then :
   else bad "$fn is named in the contract but not implemented"; fi
 done
@@ -465,6 +465,38 @@ for f in "$HERE"/../lib/*.sh; do
   if sh -n "$f" 2>/dev/null; then ok "$(basename "$f") parses as sh"
   else bad "$(basename "$f") parses as sh" "$(sh -n "$f" 2>&1 | head -1)"; fi
 done
+
+# --- what a claim's pull request is doing, on GitHub ---------------------------
+# Three answers that must stay distinct: a PR (draft or not), no PR, and could
+# not ask. The sibling find_pr pipes gh into jq, so a failing gh reads as "no
+# PR" -- the status after a pipe is jq's. This one must not repeat that.
+ACTMP=${TMPDIR:-/tmp}/seam-act.$$
+mkdir -p "$ACTMP/bin"
+cat > "$ACTMP/bin/gh" <<GHFAKE
+#!/bin/sh
+printf '%s\n' "\$*" >> "$ACTMP/args"
+[ "\${FAKE_GH_FAIL:-0}" = 1 ] && { echo "gh: HTTP 502" >&2; exit 1; }
+cat "\${FAKE_GH_PRS:-/dev/null}"
+GHFAKE
+chmod +x "$ACTMP/bin/gh"
+# Its own farm: the one above is deleted with its directory before this runs.
+ACPATH=$(gh_free_path "$ACTMP/nogh")
+act() { ( PATH="$ACTMP/bin:$ACPATH"; export PATH; . "$LIB/provider-github.sh"; "$@" ); }
+printf '[{"isDraft":true,"updatedAt":"2026-08-19T23:00:00Z"}]' > "$ACTMP/draft.json"
+printf '[]' > "$ACTMP/none.json"
+
+out=$(FAKE_GH_PRS="$ACTMP/draft.json" act provider_pr_activity feat/x owner/target)
+[ "$out" = "$(printf 'true\t2026-08-19T23:00:00Z')" ] && ok "github pr-activity prints draft and updatedAt" \
+  || bad "github pr-activity" "[$out]"
+rm -f "$ACTMP/args"
+FAKE_GH_PRS="$ACTMP/none.json" act provider_pr_activity feat/x owner/target >/dev/null
+case "$(cat "$ACTMP/args")" in *"--head feat/x"*"--repo owner/target"*) ok "and asks about that branch in that repo" ;;
+  *) bad "branch and repo carried" "$(cat "$ACTMP/args")" ;; esac
+out=$(FAKE_GH_PRS="$ACTMP/none.json" act provider_pr_activity feat/x owner/target); r=$?
+[ "$r" -eq 0 ] && [ -z "$out" ] && ok "no PR on the branch is empty output and success" || bad "no PR" "rc=$r [$out]"
+FAKE_GH_FAIL=1 act provider_pr_activity feat/x owner/target >/dev/null 2>&1; r=$?
+[ "$r" -ne 0 ] && ok "a failing gh is not 'no PR' -- the status is gh's, not jq's" || bad "gh failure masked" "rc=$r"
+rm -rf "$ACTMP"
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi

@@ -303,7 +303,7 @@ measured on a real backlog rather than imagined:
 | Check | What it found when it was measured |
 | --- | --- |
 | `cycles` | **7**, three of them real and blocking |
-| `stale` | a claim with no movement for `STALE_HOURS` (default 24) |
+| `stale` | a claim whose **draft pull request** has not moved for `STALE_HOURS` (default 24) |
 | `axes` | **0 of 118** issues carried a priority |
 | `human` | 2 answered issues still labelled, 9 needing it unlabelled |
 | `orphans` | findings with no parent, competing for queue position |
@@ -315,6 +315,11 @@ be built in the sequence it gives, so it is reported and not ranked around.
 `human` reads the same verdict `check-replies` computes — the last comment being agent-marked means
 the ball is still with the person. An agent replying to its own question does **not** count as an
 answer, which is the `needs-human`-outlives-the-answer bug seen from the other side.
+
+`stale` reads the claim's **pull request**, not the issue. Work on a claim happens on its PR, so the
+issue goes quiet the moment the claim is made — reading the issue's clock fired on every claim being
+done correctly. A PR that is ready for review is a human's turn, not an abandoned claim, so it is never
+stale; a claim with no open PR at all falls back to the issue's clock and says so.
 
 `axes` skips `needs-human` issues. A question is not queued; it gets its axes when it becomes work.
 
