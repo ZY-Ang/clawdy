@@ -182,7 +182,12 @@ fi
 # --- already claimed? --------------------------------------------------------
 # Reported, not refused. A loop re-reading its queue will re-claim, and treating
 # that as an error trains it to ignore the exit code.
-EXISTING_PR=$(provider_find_pr "$BRANCH" "$REPO" 2>/dev/null || true)
+# "Could not ask" is not "no PR": reading it as one opens a second PR for a
+# branch that already has one, which the backend refuses with an error that
+# then blames the create.
+EXISTING_PR=$(provider_find_pr "$BRANCH" "$REPO" 2>/dev/null) || {
+  echo "backlog-claim: could not ask $(provider_name) whether $BRANCH already has a pull request" >&2
+  say_backend; exit 2; }
 # The glyph is the backend's: #n on GitHub, !n on GitLab, where #n would read
 # as an issue reference pointing somewhere wrong.
 PR_MARK=$(provider_pr_ref_mark)
