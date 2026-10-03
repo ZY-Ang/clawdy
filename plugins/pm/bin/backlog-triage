@@ -12,7 +12,7 @@
 # working, issues with no axes so the order is flat, and needs-human wrong in
 # both directions at once.
 #
-# Five checks. Each was measured on a real backlog, not imagined:
+# Six checks. Each was measured on a real backlog, not imagined:
 #
 #   cycles       7 found, 3 real and blocking
 #   stale        a claim with no commit for STALE_HOURS (default 24)
