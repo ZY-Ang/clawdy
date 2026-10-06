@@ -496,6 +496,15 @@ out=$(FAKE_GH_PRS="$ACTMP/none.json" act provider_pr_activity feat/x owner/targe
 [ "$r" -eq 0 ] && [ -z "$out" ] && ok "no PR on the branch is empty output and success" || bad "no PR" "rc=$r [$out]"
 FAKE_GH_FAIL=1 act provider_pr_activity feat/x owner/target >/dev/null 2>&1; r=$?
 [ "$r" -ne 0 ] && ok "a failing gh is not 'no PR' -- the status is gh's, not jq's" || bad "gh failure masked" "rc=$r"
+
+# find_pr had the masking bug pr-activity was written to avoid.
+printf '[{"number":7}]' > "$ACTMP/one.json"
+out=$(FAKE_GH_PRS="$ACTMP/one.json" act provider_find_pr feat/x owner/target)
+[ "$out" = 7 ] && ok "github find-pr returns the PR number" || bad "find-pr number" "[$out]"
+out=$(FAKE_GH_PRS="$ACTMP/none.json" act provider_find_pr feat/x owner/target); r=$?
+[ "$r" -eq 0 ] && [ -z "$out" ] && ok "find-pr with no PR is empty output and success" || bad "find-pr no PR" "rc=$r [$out]"
+FAKE_GH_FAIL=1 act provider_find_pr feat/x owner/target >/dev/null 2>&1; r=$?
+[ "$r" -ne 0 ] && ok "a failing gh is not 'no PR' for find-pr either" || bad "find-pr masks gh failure" "rc=$r"
 rm -rf "$ACTMP"
 
 echo "---"
