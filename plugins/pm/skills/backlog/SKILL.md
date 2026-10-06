@@ -297,7 +297,7 @@ backlog-triage --only cycles
 backlog-triage --quiet         # counts only, for a loop tick
 ```
 
-Exit `0` nothing wrong · `1` something to fix · `2` could not tell. Five checks, each a shape
+Exit `0` nothing wrong · `1` something to fix · `2` could not tell. Six checks, each a shape
 measured on a real backlog rather than imagined:
 
 | Check | What it found when it was measured |
@@ -307,6 +307,7 @@ measured on a real backlog rather than imagined:
 | `axes` | **0 of 118** issues carried a priority |
 | `human` | 2 answered issues still labelled, 9 needing it unlabelled |
 | `orphans` | findings with no parent, competing for queue position |
+| `saturation` | one band holding most of the queue, so priority separates nothing inside it |
 
 **A cycle always exits 1.** An order that silently picks one side of a cycle is an order that cannot
 be built in the sequence it gives, so it is reported and not ranked around.
@@ -316,6 +317,14 @@ the ball is still with the person. An agent replying to its own question does **
 answer, which is the `needs-human`-outlives-the-answer bug seen from the other side.
 
 `axes` skips `needs-human` issues. A question is not queued; it gets its axes when it becomes work.
+
+`saturation` measures the **effective** priority, not the labelled one. Ageing promotes an issue
+one whole step per `ESCALATE_DAYS` and caps at the top, so a band fills by design rather than by
+anyone over-labelling — and it reports how many of the crowd arrived below and aged in, because
+that number is what says whether the bands are exhausted or just old. It counts only what competes
+for queue position: `claimed`, `finding` and `needs-human` are excluded. `SATURATION_PCT` (50) is
+the share that is too much and `SATURATION_MIN` (5) is the floor below which a backlog is too small
+to have a shape at all — without it a one-issue backlog is 100% saturated and says nothing.
 
 ## Closing what is no longer real
 
