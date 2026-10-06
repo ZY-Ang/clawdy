@@ -108,6 +108,19 @@ Run it **as a background command the harness owns**, not in the foreground. It e
 first unseen change and prints it along with the ranked queue, so the resumed turn has the
 ranked work in front of it rather than having to go and ask.
 
+**Re-arm with a literal command line** — the bare name or its absolute path, literal
+arguments, nothing else:
+
+```bash
+backlog-watch --repo owner/name --interval 300     # yes
+export PATH="$PWD/bin:$PATH"; backlog-watch ...    # no
+```
+
+A permission checker cannot verify an `export`, an assignment or a path whose value is only
+known at run time, and under stricter settings it asks the person instead. Every tick re-arms,
+so the loop stops at the first prompt and waits for someone who is not there — the same silent
+stall the heartbeat exists to prevent.
+
 It watches the **backlog**, through the provider seam — so it works on whatever `PM_PROVIDER`
 selects, not only GitHub:
 
