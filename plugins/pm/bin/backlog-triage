@@ -15,7 +15,7 @@
 # Six checks. Each was measured on a real backlog, not imagined:
 #
 #   cycles       7 found, 3 real and blocking
-#   stale        a claim with no commit for STALE_HOURS (default 24)
+#   stale        a claim whose draft pull request has not moved for STALE_HOURS (24)
 #   axes         0 of 118 issues carried a priority
 #   human        2 answered issues still labelled, 9 needing it unlabelled
 #   orphans      45 findings against branches with no pull request
@@ -28,6 +28,7 @@
 # Seams:
 #   BACKLOG_ISSUES_JSON   issues, provider-shaped
 #   BACKLOG_DEPS_JSON     the dependency graph, replacing whatever the issues carry
+#   BACKLOG_PRS_JSON      open PRs by branch: {"<branch>": {"draft": true, "updatedAt": "..."}}
 #   BACKLOG_NOW           a fixed epoch
 #   STALE_HOURS           how long a claim may go quiet (default 24)
 #   ESCALATE_DAYS         backlog-queue's ageing step, read so both agree (21)
@@ -48,7 +49,7 @@ pm_load_provider || exit 2
 . "$HERE/../lib/deps.sh"
 . "$HERE/../lib/agent-prefix.sh"
 
-usage() { sed -n '2,35p' "$0"; exit "${1:-0}"; }
+usage() { sed -n '2,36p' "$0"; exit "${1:-0}"; }
 
 ONLY=""; QUIET=0; REPO=${PM_REPO:-}
 while [ $# -gt 0 ]; do
@@ -113,6 +114,40 @@ if want cycles; then
   [ -n "$CYC" ] && report "cycles ($(printf '%s\n' "$CYC" | wc -l | tr -d ' ')) -- neither end can be built first" "$CYC"
 fi
 
+# --- what each claim's pull request is doing ---------------------------------
+# A claim is worked on its PR -- backlog-claim opens one first precisely so it
+# is -- and the issue goes quiet the moment the claim is made. Reading the
+# issue's clock fired on every claim being done correctly, including ones
+# waiting on review. The branch comes from the comment backlog-claim writes.
+PRS='{}'
+if want stale; then
+  CLAIMS=$(printf '%s' "$JSON" | jq -r '
+    .[] | select((.state // "OPEN") | ascii_upcase == "OPEN")
+    | select([ .labels[]? | (if type == "object" then .name else . end) ] | index("claimed"))
+    | ([ (.comments // [])[] | (.body // "") | capture("Claimed -> `(?<b>[^`]+)`")? | .b ] | last) as $b
+    | select($b != null) | "\(.number)\t\($b)"') \
+    || { echo "backlog-triage: could not read the claim comments" >&2; exit 2; }
+  ROWS=""
+  while IFS="$(printf '\t')" read -r n branch; do
+    [ -n "$n" ] || continue
+    if [ -n "${BACKLOG_PRS_JSON:-}" ]; then
+      act=$(jq -r --arg b "$branch" '.[$b] // empty | "\(.draft)\t\(.updatedAt)"' "$BACKLOG_PRS_JSON") \
+        || { echo "backlog-triage: cannot read $BACKLOG_PRS_JSON" >&2; exit 2; }
+    elif [ -n "${BACKLOG_ISSUES_JSON:-}" ]; then
+      act=""   # a fixture run never reaches the network
+    else
+      act=$(provider_pr_activity "$branch" "$REPO") || {
+        echo "backlog-triage: could not ask $(provider_name) about the pull request on $branch" >&2; exit 2; }
+    fi
+    [ -n "$act" ] && ROWS="$ROWS$n	$act
+"
+  done <<EOF
+$CLAIMS
+EOF
+  PRS=$(printf '%s' "$ROWS" | jq -R -s '[ split("\n")[] | select(length > 0) | split("\t")
+          | { key: .[0], value: { draft: (.[1] == "true"), updatedAt: .[2] } } ] | from_entries')
+fi
+
 # --- everything else comes from one jq pass ----------------------------------
 # Splitting these across passes means re-deriving the label set five times, and
 # a label read five ways is five slightly different definitions.
@@ -126,7 +161,7 @@ scan() {
   # pipeline is the `if` condition now, where -e does not apply.
   if ! printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson stale "$STALE" \
        --argjson esc "$ESC" --argjson minpct "$SAT_PCT" --argjson min "$SAT_MIN" \
-       --arg mark "$AGENT_MARK" '
+       --argjson prs "$PRS" --arg mark "$AGENT_MARK" '
     def lbl: [ .labels[]? | (if type == "object" then .name else . end) | strings ];
     # GitLab stamps milliseconds ("...T10:12:28.895Z"), GitHub does not, and the
     # fromdateiso8601 builtin rejects the fractional part outright -- so every
@@ -191,8 +226,16 @@ scan() {
     else
     .[] | select((.state // "OPEN") | ascii_upcase == "OPEN") |
       if   $ARGS.named.check == "stale"
-      then select(has("claimed") and (age > $stale))
-           | "#\(.number)  claimed, quiet for \(age | floor)h  \(.title)"
+      then select(has("claimed"))
+           | $prs[.number | tostring] as $pr
+           # Ready for review is a human turn, not an abandoned claim.
+           | select($pr == null or $pr.draft)
+           | (if $pr == null then age
+              else ((($pr.updatedAt | isodate) // $now) as $t | (($now - $t) / 3600)) end) as $h
+           | select($h > $stale)
+           | if $pr == null
+             then "#\(.number)  claimed, no open pull request found, quiet for \($h | floor)h  \(.title)"
+             else "#\(.number)  draft pull request quiet for \($h | floor)h  \(.title)" end
       elif $ARGS.named.check == "axes"
       then select((has("needs-human") | not)
                   and ((lbl | map(select(startswith("priority-"))) | length) == 0

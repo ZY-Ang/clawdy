@@ -56,6 +56,7 @@ are needed by the tools that use them; implement what you use.
 | `provider_issue_id <n> <repo>` | the backend's own id | `backlog-link` |
 | `provider_link` / `provider_unlink` | — | `backlog-link` |
 | `provider_open_draft_pr` / `provider_find_pr` | URL / number | `backlog-claim` |
+| `provider_pr_activity <branch> <repo>` | `<draft>\t<updatedAt>` for the open PR, or nothing | `backlog-triage` |
 
 ### The normalised issue
 
