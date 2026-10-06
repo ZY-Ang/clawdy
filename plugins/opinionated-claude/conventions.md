@@ -167,22 +167,19 @@ pattern, whatever the individual justifications were. Each one was reasonable; t
 When someone corrects a premise you argued from — *"that is not what the config does"*, *"section
 3 already records the opposite"* — the correction is worth more than the answer it came with.
 
-**Acknowledging it is not recording it.** Reply, act, and then file a task naming the wrong
-premise and where else it may have reached:
+**Acknowledging it is not fixing it.** You almost certainly built on the same premise somewhere
+else — a plan, a design, another issue, a comment, code — and a reply saying "you're right"
+revisits none of it. The person who corrected you should not have to remember their correction
+or audit your other work to find what it invalidated.
 
-```bash
-file-issue task "Premise 'rulesets enforce on private repos' was wrong" \
-  --body "Asserted in #33; CLAUDE.md section 3 says otherwise. Check what else assumed it."
-```
-
-Two reasons this specific case leaks. The thread closes and takes the correction with it, so it
-is invisible to anyone who did not read that issue. And you almost certainly built on the same
-premise somewhere else in the same session — a plan, another issue, a comment — and none of that
-is revisited by a reply saying "you're right".
+1. **Search what you built on the wrong premise, and fix each one in the same turn.**
+2. **File a task only for what cannot be finished now, and name each specific place.** It is done
+   when every named place is corrected or confirmed unaffected. A task that names no place hands
+   the search back to its reader, so it is not filed.
+3. **If the search finds nothing, say so, and file nothing.**
 
 **A correction that cites existing documentation is worse, not better.** It means the fact was
-already written down and you contradicted it anyway. Filing the task is the cheap part; the
-question worth answering in it is what else you read past.
+already written down and you contradicted it anyway. Search for what else you read past.
 
 ## Public repositories
 
