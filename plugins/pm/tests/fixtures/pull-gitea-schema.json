@@ -1,0 +1,65 @@
+{
+  "id": 309,
+  "url": "https://gitea.com/owner/repo/pulls/9",
+  "number": 9,
+  "user": {
+    "id": 1,
+    "login": "owner",
+    "visibility": "public"
+  },
+  "title": "WIP: Retry backs off too slowly",
+  "body": "",
+  "labels": [],
+  "milestone": null,
+  "assignee": null,
+  "assignees": null,
+  "requested_reviewers": null,
+  "requested_reviewers_teams": null,
+  "state": "open",
+  "draft": true,
+  "is_locked": false,
+  "comments": 0,
+  "review_comments": 0,
+  "additions": 0,
+  "deletions": 0,
+  "changed_files": 0,
+  "html_url": "https://gitea.com/owner/repo/pulls/9",
+  "diff_url": "https://gitea.com/owner/repo/pulls/9.diff",
+  "patch_url": "https://gitea.com/owner/repo/pulls/9.patch",
+  "mergeable": true,
+  "merged": false,
+  "merged_at": null,
+  "merge_commit_sha": null,
+  "merged_by": null,
+  "allow_maintainer_edit": false,
+  "base": {
+    "label": "main",
+    "ref": "main",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "repo_id": 1,
+    "repo": {
+      "id": 1,
+      "name": "repo",
+      "full_name": "owner/repo",
+      "html_url": "https://gitea.com/owner/repo"
+    }
+  },
+  "head": {
+    "label": "claude/retry",
+    "ref": "claude/retry",
+    "sha": "0123456789abcdef0123456789abcdef01234567",
+    "repo_id": 1,
+    "repo": {
+      "id": 1,
+      "name": "repo",
+      "full_name": "owner/repo",
+      "html_url": "https://gitea.com/owner/repo"
+    }
+  },
+  "merge_base": "89abcdef0123456789abcdef0123456789abcdef",
+  "due_date": null,
+  "created_at": "2026-10-17T18:44:16+02:00",
+  "updated_at": "2026-10-17T18:44:16+02:00",
+  "closed_at": null,
+  "pin_order": 0
+}

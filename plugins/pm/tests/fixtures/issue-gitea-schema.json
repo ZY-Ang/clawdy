@@ -1,0 +1,60 @@
+{
+  "id": 103,
+  "url": "https://gitea.com/api/v1/repos/owner/repo/issues/3",
+  "html_url": "https://gitea.com/owner/repo/issues/3",
+  "number": 3,
+  "user": {
+    "id": 1,
+    "login": "owner",
+    "full_name": "",
+    "email": "",
+    "avatar_url": "",
+    "html_url": "https://gitea.com/owner",
+    "visibility": "public"
+  },
+  "original_author": "",
+  "original_author_id": 0,
+  "title": "Retry backs off too slowly",
+  "body": "## Problem\n\nThe retry waits a fixed second.",
+  "ref": "",
+  "assets": [],
+  "labels": [
+    {
+      "id": 11,
+      "name": "task",
+      "exclusive": false,
+      "is_archived": false,
+      "color": "ededed",
+      "description": "",
+      "url": "https://gitea.com/api/v1/repos/owner/repo/labels/11"
+    },
+    {
+      "id": 14,
+      "name": "priority-high",
+      "exclusive": false,
+      "is_archived": false,
+      "color": "ededed",
+      "description": "",
+      "url": "https://gitea.com/api/v1/repos/owner/repo/labels/14"
+    }
+  ],
+  "milestone": null,
+  "assignee": null,
+  "assignees": null,
+  "state": "open",
+  "is_locked": false,
+  "comments": 0,
+  "created_at": "2026-10-14T08:00:00+02:00",
+  "updated_at": "2026-10-17T09:00:00+02:00",
+  "closed_at": null,
+  "due_date": null,
+  "time_estimate": 0,
+  "pull_request": null,
+  "repository": {
+    "id": 1,
+    "name": "repo",
+    "owner": "owner",
+    "full_name": "owner/repo"
+  },
+  "pin_order": 0
+}

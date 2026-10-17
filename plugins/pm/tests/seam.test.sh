@@ -67,8 +67,9 @@ for fn in provider_name provider_pr_ref_mark provider_available \
           provider_ensure_label provider_link provider_unlink \
           provider_issue_id provider_blocked_by provider_open_draft_pr \
           provider_find_pr provider_supports_deps ; do
-  if grep -q "^$fn()" "$LIB/provider-github.sh"; then :
-  else bad "$fn is named in the contract but not implemented"; fi
+  for p in provider-github.sh provider-gitea.sh; do
+    grep -q "^$fn()" "$LIB/$p" || bad "$fn is named in the contract but not implemented in $p"
+  done
 done
 ok "every function the contract names is implemented"
 
@@ -124,6 +125,8 @@ tri() { provider_is_triaged "$1"; echo $?; }
 [ "$(provider_pr_ref_mark)" = "#" ] && ok "github references a PR with #" || bad "github mark"
 ( . "$LIB/provider-gitlab.sh"; [ "$(provider_pr_ref_mark)" = "!" ] ) \
   && ok "gitlab references an MR with !" || bad "gitlab mark"
+( . "$LIB/provider-gitea.sh"; [ "$(provider_pr_ref_mark)" = "#" ] ) \
+  && ok "gitea references a PR with #: one number space, like github" || bad "gitea mark"
 
 [ "$(tri '{"labels":[{"name":"priority-low"},{"name":"urgency-low"},{"name":"size-s"}]}')" -eq 0 ] \
   && ok "all three axes present -> triaged" || bad "triaged -> 0"
@@ -437,7 +440,7 @@ case "$out" in *"repo view"*) ok "with no repo, cwd inference is unchanged" ;;
   *) bad "no-repo fallback" "argv: $(printf '%s' "$out" | head -1)" ;; esac
 
 # Both providers must take the same argument, or the contract is a suggestion.
-for f in provider-github.sh provider-gitlab.sh; do
+for f in provider-github.sh provider-gitlab.sh provider-gitea.sh; do
   if grep -qE '^provider_supports_deps\(\)' "$LIB/$f"; then
     if grep -A4 '^provider_supports_deps()' "$LIB/$f" | grep -q '\${1'; then
       ok "$f: supports_deps accepts a repo"

@@ -1,0 +1,44 @@
+[
+  {
+    "id": 22,
+    "html_url": "https://gitea.com/owner/repo/issues/5#issuecomment-22",
+    "pull_request_url": "",
+    "issue_url": "https://gitea.com/owner/repo/issues/5",
+    "user": {
+      "id": 2,
+      "login": "maintainer",
+      "full_name": "",
+      "email": "",
+      "avatar_url": "",
+      "html_url": "https://gitea.com/maintainer",
+      "visibility": "public"
+    },
+    "original_author": "",
+    "original_author_id": 0,
+    "body": "Use 30 seconds.",
+    "assets": [],
+    "created_at": "2026-10-17T10:15:00+02:00",
+    "updated_at": "2026-10-17T10:15:00+02:00"
+  },
+  {
+    "id": 21,
+    "html_url": "https://gitea.com/owner/repo/issues/5#issuecomment-21",
+    "pull_request_url": "",
+    "issue_url": "https://gitea.com/owner/repo/issues/5",
+    "user": {
+      "id": 1,
+      "login": "owner",
+      "full_name": "",
+      "email": "",
+      "avatar_url": "",
+      "html_url": "https://gitea.com/owner",
+      "visibility": "public"
+    },
+    "original_author": "",
+    "original_author_id": 0,
+    "body": "🤖\n\nAsked: which timeout?",
+    "assets": [],
+    "created_at": "2026-10-16T09:31:00+02:00",
+    "updated_at": "2026-10-16T09:31:00+02:00"
+  }
+]

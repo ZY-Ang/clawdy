@@ -1,0 +1,47 @@
+[
+  {
+    "id": 11,
+    "name": "task",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "ededed",
+    "description": "",
+    "url": "https://gitea.com/api/v1/repos/owner/repo/labels/11"
+  },
+  {
+    "id": 12,
+    "name": "needs-human",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "ededed",
+    "description": "",
+    "url": "https://gitea.com/api/v1/repos/owner/repo/labels/12"
+  },
+  {
+    "id": 13,
+    "name": "claimed",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "ededed",
+    "description": "",
+    "url": "https://gitea.com/api/v1/repos/owner/repo/labels/13"
+  },
+  {
+    "id": 14,
+    "name": "priority-high",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "ededed",
+    "description": "",
+    "url": "https://gitea.com/api/v1/repos/owner/repo/labels/14"
+  },
+  {
+    "id": 15,
+    "name": "question",
+    "exclusive": false,
+    "is_archived": false,
+    "color": "ededed",
+    "description": "",
+    "url": "https://gitea.com/api/v1/repos/owner/repo/labels/15"
+  }
+]

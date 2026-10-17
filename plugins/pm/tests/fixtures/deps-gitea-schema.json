@@ -1,0 +1,76 @@
+[
+  {
+    "id": 202,
+    "url": "https://gitea.com/api/v1/repos/owner/repo/issues/2",
+    "html_url": "https://gitea.com/owner/repo/issues/2",
+    "number": 2,
+    "user": {
+      "id": 1,
+      "login": "owner",
+      "visibility": "public"
+    },
+    "original_author": "",
+    "original_author_id": 0,
+    "title": "a blocker",
+    "body": "",
+    "ref": "",
+    "assets": [],
+    "labels": [],
+    "milestone": null,
+    "assignee": null,
+    "assignees": null,
+    "state": "open",
+    "is_locked": false,
+    "comments": 0,
+    "created_at": "2026-10-10T08:00:00+02:00",
+    "updated_at": "2026-10-10T08:00:00+02:00",
+    "closed_at": null,
+    "due_date": null,
+    "time_estimate": 0,
+    "pull_request": null,
+    "repository": {
+      "id": 1,
+      "name": "repo",
+      "owner": "owner",
+      "full_name": "owner/repo"
+    },
+    "pin_order": 0
+  },
+  {
+    "id": 209,
+    "url": "https://gitea.com/api/v1/repos/other/lib/issues/9",
+    "html_url": "https://gitea.com/other/lib/issues/9",
+    "number": 9,
+    "user": {
+      "id": 1,
+      "login": "owner",
+      "visibility": "public"
+    },
+    "original_author": "",
+    "original_author_id": 0,
+    "title": "a blocker",
+    "body": "",
+    "ref": "",
+    "assets": [],
+    "labels": [],
+    "milestone": null,
+    "assignee": null,
+    "assignees": null,
+    "state": "open",
+    "is_locked": false,
+    "comments": 0,
+    "created_at": "2026-10-10T08:00:00+02:00",
+    "updated_at": "2026-10-10T08:00:00+02:00",
+    "closed_at": null,
+    "due_date": null,
+    "time_estimate": 0,
+    "pull_request": null,
+    "repository": {
+      "id": 7,
+      "name": "lib",
+      "owner": "other",
+      "full_name": "other/lib"
+    },
+    "pin_order": 0
+  }
+]
