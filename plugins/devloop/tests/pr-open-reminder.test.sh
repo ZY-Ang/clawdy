@@ -49,6 +49,11 @@ fires  "gitea-api POST with a leading slash fires" \
   'gitea-api -X POST /repos/o/r/pulls --input -'
 fires  "gitea-api by absolute path, after &&, fires" \
   'cd /x && /p/devloop/bin/gitea-api --input b.json -X post \"repos/o/r/pulls\"'
+fires  "gitea-api behind variable assignments fires" \
+  'GITEA_TOKEN=$(cat t) GITEA_URL=u gitea-api -X POST repos/o/r/pulls --input b.json'
+fires  "gitea-api through env fires" 'env GITEA_URL=u gitea-api -X POST repos/o/r/pulls'
+fires  "gitea-api through sh fires" 'sh bin/gitea-api -X POST repos/o/r/pulls'
+fires  "gitea-api by a quoted path fires" '\"$P/bin/gitea-api\" -X POST repos/o/r/pulls'
 silent "gitea-api GET repos/o/r/pulls does not fire" \
   'gitea-api repos/o/r/pulls'
 silent "gitea-api POST to a PR sub-path does not fire" \

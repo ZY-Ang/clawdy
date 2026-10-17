@@ -51,10 +51,15 @@ status() { # <state> <context> -> one CommitStatus
 combined() { # <statuses json array>
   printf '{"state":"pending","sha":"%s","total_count":0,"statuses":%s,"commit_url":"","url":""}' "$HEAD_SHA" "$1"
 }
-review() { # <id> <user id> <state> <dismissed>
-  printf '{"id":%s,"user":{"id":%s,"login":"u%s"},"state":"%s","dismissed":%s,"stale":false,"official":true,"commit_id":"%s"}' \
-    "$1" "$2" "$2" "$3" "$4" "$HEAD_SHA"
+review() { # <id> <user id> <state> <dismissed> [official]
+  printf '{"id":%s,"user":{"id":%s,"login":"u%s"},"state":"%s","dismissed":%s,"stale":false,"official":%s,"commit_id":"%s"}' \
+    "$1" "$2" "$2" "$3" "$4" "${5:-true}" "$HEAD_SHA"
 }
+branch() { # <required approvals> <enable status check> <contexts json array> -> Branch
+  printf '{"name":"main","protected":true,"required_approvals":%s,"enable_status_check":%s,"status_check_contexts":%s,"user_can_push":false,"user_can_merge":false}' \
+    "$1" "$2" "$3"
+}
+UNPROTECTED='{"name":"main","protected":false,"required_approvals":0,"enable_status_check":false,"status_check_contexts":[]}'
 
 # setup <pr json> <statuses array> <reviews array>: routes for PR 14, one page each.
 setup() {
@@ -64,6 +69,7 @@ setup() {
   route GET "$A/commits/$HEAD_SHA/status?page=2&limit=50" 200 "$(combined null)"
   route GET "$A/pulls/14/reviews?page=1&limit=50" 200 "$3"
   route GET "$A/pulls/14/reviews?page=2&limit=50" 200 '[]'
+  route GET "$A/branches/main" 200 "${4:-$UNPROTECTED}"
 }
 
 env_run() { # <cmd...>; sets out, rc
@@ -132,6 +138,47 @@ expect "a comment after an approval keeps the approval" 0 "READY TO MERGE"
 
 setup "$OPEN_OK" "$GREEN" "[$(review 1 8 REQUEST_CHANGES true)]"; pw 14
 expect "a dismissed request is ignored" 0 "READY FOR REVIEW"
+
+# --- what Gitea's own merge gate requires -----------------------------------
+setup "$OPEN_OK" "$GREEN" "[$(review 1 9 APPROVED false false)]"; pw 14
+expect "an unofficial approval does not count" 0 "READY FOR REVIEW"
+
+setup "$OPEN_OK" "$GREEN" "$APPROVED" "$(branch 2 false '[]')"; pw 14
+expect "one approval where the branch needs two: review still required" 0 "READY FOR REVIEW"
+
+setup "$OPEN_OK" "$GREEN" "[$(review 1 9 APPROVED false),$(review 2 8 APPROVED false)]" "$(branch 2 false '[]')"; pw 14
+expect "two approvals where the branch needs two: READY TO MERGE" 0 "READY TO MERGE"
+
+setup "$OPEN_OK" "$GREEN" "$APPROVED" "$(branch 0 true '["deploy"]')"; pw 14
+expect "a required check that has not reported is still running" 1 "still running"
+
+setup "$OPEN_OK" "$GREEN" "$APPROVED" "$(branch 0 true '["bui*","t?st"]')"; pw 14
+expect "required check globs matched by reported statuses pass" 0 "READY TO MERGE"
+
+setup "$OPEN_OK" "$GREEN" "$APPROVED" "$(branch 0 false '["deploy"]')"; pw 14
+expect "required contexts are ignored while status checks are off" 0 "READY TO MERGE"
+
+setup "$(printf '%s' "$OPEN_OK" | jq -c 'del(.draft) | .title = "[wip] thing" | .mergeable = false')" "$GREEN" '[]'; pw 14
+expect "no draft field (older Gitea): a WIP title is still a draft" 1 "still a draft"
+
+# --- a failed fetch is could-not-tell, never a green gate ------------------
+for broken in "commits/$HEAD_SHA/status?page=1&limit=50" "pulls/14/reviews?page=1&limit=50" "branches/main"; do
+  setup "$OPEN_OK" "$GREEN" "$APPROVED"
+  route GET "$A/$broken" 500 '{"message":"internal error"}'
+  pw 14
+  expect "HTTP 500 on $broken: could not tell" 2 "internal error"
+done
+
+setup "$OPEN_OK" "$GREEN" "$APPROVED"
+route GET "$A/pulls/14/reviews?page=1&limit=50" 200 '{"message":"not a list"}'
+pw 14
+expect "a page that is not a list: could not tell" 2 "unexpected response"
+
+setup "$OPEN_OK" "$GREEN" "$APPROVED"
+p=1; while [ "$p" -le 101 ]; do
+  route GET "$A/pulls/14/reviews?page=$p&limit=50" 200 "$APPROVED"; p=$((p + 1)); done
+pw 14
+expect "a server ignoring page stops at the cap: could not tell" 2 "more than 100 pages"
 
 setup "$(pr 14 closed true false false "$BASE_SHA" t)" '[]' '[]'; pw 14
 expect "merged: state MERGED" 1 "state is MERGED"
@@ -204,9 +251,9 @@ for remote in "https://gitea.com/o/r.git" "git@gitea.com:o/r.git" "ssh://git@git
   git -C "$TMP/work" remote remove origin 2>/dev/null
   git -C "$TMP/work" remote add origin "$remote"
   setup "$OPEN_OK" "$GREEN" '[]'
-  route GET "$A/pulls?state=open&page=1&limit=50" 200 \
-    "[{\"number\":12,\"head\":{\"ref\":\"other\"},\"user\":{\"login\":\"me\"}},{\"number\":14,\"head\":{\"ref\":\"feat\"},\"user\":{\"login\":\"me\"}}]"
-  route GET "$A/pulls?state=open&page=2&limit=50" 200 '[]'
+  route GET "$A/pulls?state=open&sort=oldest&page=1&limit=50" 200 \
+    "[{\"number\":11,\"head\":{\"ref\":\"feat\",\"repo\":{\"full_name\":\"someone/r\"}},\"user\":{\"login\":\"someone\"}},{\"number\":12,\"head\":{\"ref\":\"other\"},\"user\":{\"login\":\"me\"}},{\"number\":14,\"head\":{\"ref\":\"feat\",\"repo\":{\"full_name\":\"o/r\"}},\"user\":{\"login\":\"me\"}}]"
+  route GET "$A/pulls?state=open&sort=oldest&page=2&limit=50" 200 '[]'
   GR=; prov view; unset GR
   if [ "$rc" -eq 0 ] && [ "$(printf '%s' "$out" | jq -r .number)" = 14 ]
   then ok "no id: branch feat resolves to PR 14 via remote $remote"
@@ -214,18 +261,18 @@ for remote in "https://gitea.com/o/r.git" "git@gitea.com:o/r.git" "ssh://git@git
 done
 
 setup "$OPEN_OK" "$GREEN" '[]'
-route GET "$A/pulls?state=open&page=1&limit=50" 200 '[{"number":12,"head":{"ref":"other"},"user":{"login":"me"}}]'
-route GET "$A/pulls?state=open&page=2&limit=50" 200 '[]'
+route GET "$A/pulls?state=open&sort=oldest&page=1&limit=50" 200 '[{"number":12,"head":{"ref":"other"},"user":{"login":"me"}}]'
+route GET "$A/pulls?state=open&sort=oldest&page=2&limit=50" 200 '[]'
 prov view
 expect "no id and no PR for the branch is exit 2" 2 "no open pull request for branch feat"
 
 # --- list, mark, unknown verbs ---------------------------------------------
 reset
 route GET "$URL/api/v1/user" 200 '{"id":7,"login":"me"}'
-route GET "$A/pulls?state=open&page=1&limit=50" 200 \
+route GET "$A/pulls?state=open&sort=oldest&page=1&limit=50" 200 \
   '[{"number":14,"user":{"login":"me"}},{"number":15,"user":{"login":"someone"}}]'
-route GET "$A/pulls?state=open&page=2&limit=50" 200 '[{"number":16,"user":{"login":"me"}}]'
-route GET "$A/pulls?state=open&page=3&limit=50" 200 '[]'
+route GET "$A/pulls?state=open&sort=oldest&page=2&limit=50" 200 '[{"number":16,"user":{"login":"me"}}]'
+route GET "$A/pulls?state=open&sort=oldest&page=3&limit=50" 200 '[]'
 prov list
 if [ "$rc" -eq 0 ] && [ "$out" = "$(printf '14\n16')" ]
 then ok "list: the token user's open PRs, every page"; else bad "list: the token user's open PRs, every page" "rc=$rc [$out]"; fi

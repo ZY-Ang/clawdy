@@ -142,12 +142,14 @@ PR_WATCH_PROVIDER=pr-watch-gitea pr-watch 14
 ```
 
 - **Checks** are Gitea's combined commit status for the head sha. `warning` counts as failing
-  and `skipped` as passing, as in Gitea's own merge gate.
+  and `skipped` as passing, as in Gitea's own merge gate. A context the base branch requires
+  that has not reported yet counts as pending.
 - **`BEHIND`** is `merge_base` differing from the base tip. Gitea recomputes `merge_base` on
   every head or base push and reports the PR not mergeable until it has.
 - **`mergeable`** is false while Gitea is still checking, which reads as not ready.
-- **Review** is each reviewer's latest non-dismissed approval or change request; none at all
-  is `REVIEW_REQUIRED`.
+- **Review** is each reviewer's latest non-dismissed approval or change request. It is
+  `APPROVED` only with as many official approvals as the base branch requires (at least one);
+  otherwise `REVIEW_REQUIRED`.
 - There is no `wait` verb, so `--wait` polls. `mark` is `#`: issues and pull requests share
   one numbering.
 
