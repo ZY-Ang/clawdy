@@ -1,0 +1,71 @@
+#!/bin/sh
+# The `gh api` equivalent for Gitea: one REST call, response body on stdout.
+#
+#   gitea-api repos/o/r/pulls/14
+#   gitea-api repos/o/r/issues/14/timeline
+#   gitea-api -X POST repos/o/r/pulls --input body.json
+#   gitea-api -X PATCH repos/o/r/issues/14 --input - < body.json
+#
+# The path is relative to $GITEA_URL/api/v1; a leading slash is accepted.
+# Configured by GITEA_URL and GITEA_TOKEN in the environment.
+#
+# Exit codes:
+#   0  HTTP 2xx
+#   1  HTTP error; Gitea's own message on stderr
+#   2  could not ask (usage, missing variable, curl or jq missing, network)
+#
+# Requires: curl, jq.
+
+set -u
+
+usage() {
+  echo "usage: gitea-api [-X METHOD] <path> [--input FILE|-]" >&2
+  exit 2
+}
+
+method=GET path="" input=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -X) [ $# -ge 2 ] || usage; method=$2; shift 2 ;;
+    --input) [ $# -ge 2 ] || usage; input=$2; shift 2 ;;
+    -h|--help) sed -n '2,/^# Requires:/p' "$0"; exit 0 ;;
+    -?*) echo "gitea-api: unknown option $1" >&2; usage ;;
+    *) [ -z "$path" ] || usage; path=$1; shift ;;
+  esac
+done
+[ -n "$path" ] || usage
+method=$(printf '%s' "$method" | tr '[:lower:]' '[:upper:]')
+
+[ -n "${GITEA_URL:-}" ] || { echo "gitea-api: GITEA_URL is not set" >&2; exit 2; }
+[ -n "${GITEA_TOKEN:-}" ] || { echo "gitea-api: GITEA_TOKEN is not set" >&2; exit 2; }
+command -v curl >/dev/null 2>&1 || { echo "gitea-api: curl is not installed" >&2; exit 2; }
+command -v jq >/dev/null 2>&1 || { echo "gitea-api: jq is not installed" >&2; exit 2; }
+
+tmp=$(umask 077 && mktemp -d) || { echo "gitea-api: cannot create a temp directory" >&2; exit 2; }
+trap 'rm -rf "$tmp"' EXIT
+trap 'exit 2' INT TERM
+
+# The token goes in a mode-600 curl config file, never on the command line,
+# where any process listing would show it.
+( umask 077 && printf 'header = "Authorization: token %s"\n' "$GITEA_TOKEN" > "$tmp/auth" )
+
+set -- -sS -g -K "$tmp/auth" -X "$method" -H 'Accept: application/json' \
+  -o "$tmp/out" -w '%{http_code}'
+if [ -n "$input" ]; then
+  if [ "$input" = "-" ]; then cat > "$tmp/body"
+  elif [ -f "$input" ]; then cp "$input" "$tmp/body"
+  else echo "gitea-api: --input file not found: $input" >&2; exit 2; fi
+  set -- "$@" -H 'Content-Type: application/json' --data-binary "@$tmp/body"
+fi
+
+url="${GITEA_URL%/}/api/v1/${path#/}"
+code=$(curl "$@" "$url" </dev/null) || {
+  echo "gitea-api: could not reach $url" >&2; exit 2; }
+
+case "$code" in
+  2??) [ -f "$tmp/out" ] && cat "$tmp/out"; exit 0 ;;
+esac
+msg=$(jq -r '.message // empty' "$tmp/out" 2>/dev/null) || msg=""
+[ -n "$msg" ] || msg=$(head -c 500 "$tmp/out" 2>/dev/null)
+echo "gitea-api: HTTP $code from $method ${path#/}: $msg" >&2
+exit 1

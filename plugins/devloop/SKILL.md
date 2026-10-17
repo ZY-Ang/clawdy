@@ -113,6 +113,46 @@ one organisation's private host, cannot be contributed upstream, and should not 
 So the provider lives entirely outside this repo, and `pr-watch` keeps sole ownership of the
 part worth sharing — the gate.
 
+### On Gitea
+
+Gitea is a public host, so its provider ships here. Set two variables: `GITEA_URL` (the
+instance root; a trailing slash is fine) and `GITEA_TOKEN`. Missing either is exit `2`, naming
+it. Everything runs on `curl` and `jq`, so no extra CLI is required, and the token is sent from
+a mode-600 temp file, never on a command line.
+
+**`gitea-api` is the `gh api` equivalent.** The path is relative to `/api/v1`; a JSON body
+comes from `--input FILE` or `--input -` (stdin). Exit `0` on 2xx, `1` on an HTTP error with
+Gitea's message on stderr, `2` when it could not ask. Lists are paged: add `?page=N&limit=50`.
+
+```bash
+gitea-api repos/{o}/{r}/pulls/{n}                        # PR view
+gitea-api repos/{o}/{r}/pulls/{n}/reviews                # reviews; inline comments hang off each:
+gitea-api repos/{o}/{r}/pulls/{n}/reviews/{id}/comments
+gitea-api repos/{o}/{r}/issues/{n}/timeline              # timeline
+gitea-api repos/{o}/{r}/commits/{sha}/status             # combined status, not check runs
+gitea-api -X POST repos/{o}/{r}/pulls --input pr.json    # open a PR
+```
+
+`pr.json` is `{"base": "main", "head": "<branch>", "title": "...", "body": "..."}`. Gitea has
+no draft flag: a title starting `WIP:` or `[WIP]` is a draft, and the API's `draft` field is
+derived from it. Opening one fires the same watcher reminder as `gh pr create`.
+
+```bash
+PR_WATCH_PROVIDER=pr-watch-gitea pr-watch 14
+```
+
+- **Checks** are Gitea's combined commit status for the head sha. `warning` counts as failing
+  and `skipped` as passing, as in Gitea's own merge gate. A context the base branch requires
+  that has not reported yet counts as pending.
+- **`BEHIND`** is `merge_base` differing from the base tip. Gitea recomputes `merge_base` on
+  every head or base push and reports the PR not mergeable until it has.
+- **`mergeable`** is false while Gitea is still checking, which reads as not ready.
+- **Review** is each reviewer's latest non-dismissed approval or change request. It is
+  `APPROVED` only with as many official approvals as the base branch requires (at least one);
+  otherwise `REVIEW_REQUIRED`.
+- There is no `wait` verb, so `--wait` polls. `mark` is `#`: issues and pull requests share
+  one numbering.
+
 Run it before you type the words, not after. Under the hood it is the check below.
 
 ```bash
