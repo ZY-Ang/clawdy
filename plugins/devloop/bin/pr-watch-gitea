@@ -1,0 +1,125 @@
+#!/bin/sh
+# pr-watch provider for Gitea.
+#
+#   PR_WATCH_PROVIDER=pr-watch-gitea pr-watch 14
+#   PR_WATCH_PROVIDER=pr-watch-gitea pr-watch --all
+#
+# Verbs (the contract is at the top of pr-watch):
+#   view [<n>]  the pull request as pr-watch JSON; no id = the current branch's
+#   list        ids of open pull requests authored by the token's user
+#   mark        "#": Gitea issues and pull requests share one numbering
+# Anything else, `wait` included, exits 2 so pr-watch polls.
+#
+# Repository from PR_WATCH_REPO (owner/name), else the origin remote.
+# Configured by GITEA_URL and GITEA_TOKEN, through gitea-api.
+#
+# Requires: jq, git, and gitea-api beside this file.
+
+set -u
+
+API=$(dirname "$0")/gitea-api
+die() { echo "pr-watch-gitea: $*" >&2; exit 2; }
+
+# Every page of a list endpoint, one compact JSON array per page on stdout.
+# $2 picks the array out of a page. Stops at the first empty page, because a
+# server may cap `limit` below what was asked.
+pages() {
+  case "$1" in *\?*) _sep='&' ;; *) _sep='?' ;; esac
+  _p=1
+  while :; do
+    _j=$("$API" "$1${_sep}page=$_p&limit=50" </dev/null) || return 2
+    _a=$(printf '%s' "$_j" | jq -c "$2") || return 2
+    [ "$_a" = "[]" ] && return 0
+    printf '%s\n' "$_a"
+    _p=$((_p + 1))
+  done
+}
+
+repo() {
+  if [ -n "${PR_WATCH_REPO:-}" ]; then R=$PR_WATCH_REPO
+  else
+    u=$(git remote get-url origin 2>/dev/null) || die "no PR_WATCH_REPO and no origin remote"
+    u=${u%/}; u=${u%.git}
+    # scp-style user@host:owner/name has no scheme; drop everything to the colon.
+    case "$u" in *://*) ;; *:*) u=${u#*:} ;; esac
+    name=${u##*/}; u=${u%/*}; R=${u##*/}/$name
+  fi
+  case "$R" in
+    */*/*|/*|*/|*[!A-Za-z0-9._/-]*) die "repository must be owner/name, got: $R" ;;
+    */*) ;;
+    *) die "repository must be owner/name, got: $R" ;;
+  esac
+}
+
+view() {
+  repo
+  if [ -n "${1:-}" ]; then
+    case "$1" in *[!0-9]*) die "pull request id must be digits, got: $1" ;; esac
+    pr=$("$API" "repos/$R/pulls/$1" </dev/null) || exit 2
+  else
+    br=$(git symbolic-ref --short HEAD 2>/dev/null) || die "not on a git branch"
+    open=$(pages "repos/$R/pulls?state=open" '[.[] | {number, head: .head.ref}]') || exit 2
+    n=$(printf '%s' "$open" | jq -rs --arg b "$br" '[add // [] | .[] | select(.head == $b)][0].number // empty')
+    [ -n "$n" ] || die "no open pull request for branch $br in $R"
+    pr=$("$API" "repos/$R/pulls/$n" </dev/null) || exit 2
+  fi
+  n=$(printf '%s' "$pr" | jq -r '.number') || die "unreadable pull request JSON"
+
+  # Statuses and reviews only matter while open; a closed PR's head may be gone.
+  st='[]' rv='[]'
+  if [ "$(printf '%s' "$pr" | jq -r '.state == "open" and (.merged | not)')" = true ]; then
+    sha=$(printf '%s' "$pr" | jq -r '.head.sha')
+    st=$(pages "repos/$R/commits/$sha/status" '.statuses // []') || exit 2
+    st=$(printf '%s' "$st" | jq -cs 'add // []')
+    rv=$(pages "repos/$R/pulls/$n/reviews" '.') || exit 2
+    rv=$(printf '%s' "$rv" | jq -cs 'add // []')
+  fi
+
+  printf '%s' "$pr" | jq -c --argjson st "$st" --argjson rv "$rv" '
+    # Gitea fails a required-status merge on warning; unknown states fail closed.
+    def state: {pending: "PENDING", success: "SUCCESS", skipped: "SUCCESS",
+                failure: "FAILURE", error: "ERROR", warning: "FAILURE"}[.] // "ERROR";
+    [ $st[] | {__typename: "StatusContext", context, state: (.status | state)} ] as $checks
+    # False while Gitea is still checking (errs toward not ready), and for any
+    # WIP title, where mergeability is then unknown.
+    | (.mergeable == true) as $ok
+    # Gitea re-computes merge_base on every head or base push, and reports the
+    # PR not mergeable until it has; base.sha is the base tip at request time.
+    | (.merge_base != .base.sha) as $behind
+    | {
+        number, title,
+        isDraft: (.draft == true),
+        state: (if .merged then "MERGED" elif .state == "closed" then "CLOSED" else "OPEN" end),
+        mergeable: (if $ok then "MERGEABLE" elif .draft then "UNKNOWN" else "CONFLICTING" end),
+        mergeStateStatus: (
+          if .draft then "DRAFT"
+          elif ($ok | not) then "DIRTY"
+          elif $behind then "BEHIND"
+          elif any($checks[]; .state != "SUCCESS") then "UNSTABLE"
+          else "CLEAN" end),
+        reviewDecision: (
+          [ $rv[] | select((.dismissed | not)
+                           and (.state == "APPROVED" or .state == "REQUEST_CHANGES")) ]
+          | group_by(.user.id) | map(max_by(.id).state) as $latest
+          | if any($latest[]; . == "REQUEST_CHANGES") then "CHANGES_REQUESTED"
+            elif any($latest[]; . == "APPROVED") then "APPROVED"
+            else "REVIEW_REQUIRED" end),
+        statusCheckRollup: $checks
+      }' || die "unreadable pull request JSON"
+}
+
+list() {
+  repo
+  me=$("$API" user </dev/null) || exit 2
+  me=$(printf '%s' "$me" | jq -r '.login // empty' 2>/dev/null)
+  [ -n "$me" ] || die "could not read the token's user"
+  open=$(pages "repos/$R/pulls?state=open" '[.[] | {number, user: .user.login}]') || exit 2
+  printf '%s' "$open" | jq -rs --arg me "$me" 'add // [] | .[] | select(.user == $me) | .number'
+}
+
+case "${1:-}" in
+  view) shift; view "${1:-}" ;;
+  list) list ;;
+  mark) printf '#\n' ;;
+  *) die "unknown verb: ${1:-}" ;;
+esac

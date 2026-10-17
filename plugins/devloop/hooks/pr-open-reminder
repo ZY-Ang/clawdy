@@ -18,11 +18,17 @@ cmd=$(printf '%s' "$INPUT" | jq -r '.tool_input.command // ""' 2>/dev/null)
 
 # Segment-start match, so prose mentioning gh pr create inside a heredoc does
 # not fire.
-gated=$(printf '%s' "$cmd" \
+segs=$(printf '%s' "$cmd" \
   | tr ';\n' '\a\a' | sed 's/&&/\a/g; s/||/\a/g; s/|/\a/g' | tr '\a' '\n' \
-  | sed 's/^[[:space:]]*//' \
+  | sed 's/^[[:space:]]*//')
+gated=$(printf '%s\n' "$segs" \
   | grep -cE '^(sudo[[:space:]]+)?gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)')
-[ "${gated:-0}" -gt 0 ] || exit 0
+# Gitea: a gitea-api POST to exactly repos/<o>/<r>/pulls.
+gitea=$(printf '%s\n' "$segs" \
+  | grep -E '^(sudo[[:space:]]+)?([^[:space:]]*/)?gitea-api[[:space:]]' \
+  | grep -E '[[:space:]]-X[[:space:]]+[Pp][Oo][Ss][Tt]([[:space:]]|$)' \
+  | grep -cE "[[:space:]][\"']?/?repos/[^/[:space:]\"']+/[^/[:space:]\"']+/pulls[\"']?([[:space:]]|$)")
+[ "${gated:-0}" -gt 0 ] || [ "${gitea:-0}" -gt 0 ] || exit 0
 
 cat <<'JSON'
 {

@@ -1,0 +1,43 @@
+#!/bin/sh
+# Stand-in for curl in the Gitea suites. Serves canned responses by method and
+# URL, and logs every request so a test can assert what went over the wire.
+#
+#   $STUB_DIR/routes   one per line: METHOD URL HTTP-CODE BODY-FILE
+#                      (code 000 = could not connect, curl exits 7;
+#                      the last matching line wins)
+#   $STUB_DIR/log      ARGV / HEADER / REQ / CFG / CFGMODE / BODY lines
+#
+# Accepts only the options gitea-api passes, so a new one fails loudly here.
+
+d=${STUB_DIR:?STUB_DIR is not set}
+printf 'ARGV %s\n' "$*" >> "$d/log"
+m=GET out="" cfg="" data="" url=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -K) cfg=$2; shift 2 ;;
+    -X) m=$2; shift 2 ;;
+    -o) out=$2; shift 2 ;;
+    -w) shift 2 ;;
+    -H) printf 'HEADER %s\n' "$2" >> "$d/log"; shift 2 ;;
+    --data-binary) data=${2#@}; shift 2 ;;
+    -sS|-g) shift ;;
+    -*) echo "stub curl: unexpected option $1" >&2; exit 99 ;;
+    *) url=$1; shift ;;
+  esac
+done
+printf 'REQ %s %s\n' "$m" "$url" >> "$d/log"
+if [ -n "$cfg" ]; then
+  printf 'CFG %s\n' "$(cat "$cfg")" >> "$d/log"
+  printf 'CFGMODE %s\n' "$(ls -l "$cfg" | cut -c1-10)" >> "$d/log"
+fi
+[ -n "$data" ] && printf 'BODY %s\n' "$(cat "$data")" >> "$d/log"
+
+route=$(awk -v m="$m" -v u="$url" '$1 == m && $2 == u { r = $3 " " $4 } END { if (r != "") print r }' "$d/routes" 2>/dev/null)
+if [ -z "$route" ]; then
+  printf '{"message":"stub: no route for %s %s"}' "$m" "$url" > "$out"
+  printf '404'; exit 0
+fi
+set -- $route
+if [ "$1" = 000 ]; then echo "curl: (7) Failed to connect" >&2; exit 7; fi
+cp "$2" "$out"
+printf '%s' "$1"

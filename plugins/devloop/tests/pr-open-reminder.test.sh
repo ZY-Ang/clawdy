@@ -34,6 +34,30 @@ out=$(feed 'not json at all')
 case "$out" in *watcher*) bad "unparseable input stays silent" ;;
   *) ok "unparseable input stays silent" ;; esac
 
+# --- Gitea: gitea-api POST to repos/<o>/<r>/pulls ---------------------------
+fires() { # <name> <command JSON string>
+  out=$(feed "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$2\"}}")
+  case "$out" in *watcher*) ok "$1" ;; *) bad "$1" "$out" ;; esac
+}
+silent() {
+  out=$(feed "{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"$2\"}}")
+  case "$out" in *watcher*) bad "$1" "$out" ;; *) ok "$1" ;; esac
+}
+fires  "gitea-api POST repos/o/r/pulls fires" \
+  'gitea-api -X POST repos/o/r/pulls --input /tmp/b.json'
+fires  "gitea-api POST with a leading slash fires" \
+  'gitea-api -X POST /repos/o/r/pulls --input -'
+fires  "gitea-api by absolute path, after &&, fires" \
+  'cd /x && /p/devloop/bin/gitea-api --input b.json -X post \"repos/o/r/pulls\"'
+silent "gitea-api GET repos/o/r/pulls does not fire" \
+  'gitea-api repos/o/r/pulls'
+silent "gitea-api POST to a PR sub-path does not fire" \
+  'gitea-api -X POST repos/o/r/pulls/3/reviews --input b.json'
+silent "gitea-api POST to issues does not fire" \
+  'gitea-api -X POST repos/o/r/issues --input b.json'
+silent "prose naming a gitea-api POST does not fire" \
+  'echo run gitea-api -X POST repos/o/r/pulls yourself'
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)
