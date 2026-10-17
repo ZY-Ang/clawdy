@@ -278,6 +278,9 @@ Precedence is the same as every other knob here — `--agent` beats `PM_AGENT` b
 The provider is a seam, not an abstraction added later. `lib/provider-github.sh` implements four
 functions; an adapter for another backend is a new file behind the same contract.
 
+Three ship: `github` (the default), `gitlab` and `gitea`. The Gitea one needs `GITEA_URL` and
+`GITEA_TOKEN`; `lib/PROVIDERS.md` has its setup and where it differs.
+
 The plugin is named `pm` because GitHub is where it starts. If the suite outgrows the prefix,
 the rename is cosmetic — nothing above the seam knows which backend it is talking to.
 

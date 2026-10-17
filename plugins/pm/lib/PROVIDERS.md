@@ -7,7 +7,8 @@ those out here rather than after writing the code.
 `lib/provider-github.sh` is the reference implementation. `lib/provider-gitlab.sh` is the
 second, through the public `glab` CLI: it lists and views issues, and writes issues and
 MRs. The authenticated remainder — the issue-link graph and the needs-human notes —
-waits on a token (issue #18).
+waits on a token (issue #18). `lib/provider-gitea.sh` is the third, through Gitea's web
+API; see [Gitea](#gitea).
 
 ## Where the seam is
 
@@ -181,6 +182,37 @@ even in a throwaway repo — is synthetic traffic GitHub's terms do not permit, 
 the suite has never run against GitHub. That is a known gap, and it is
 deliberate: the suite is the acceptance test for a provider whose backend terms
 allow it, not a GitHub regression test.
+
+## Gitea
+
+`PM_PROVIDER=gitea` talks to Gitea's web API (`$GITEA_URL/api/v1`) through `curl` and `jq`.
+No Gitea CLI is needed. Gitea only: Forgejo is not tested and not claimed.
+
+```sh
+export PM_PROVIDER=gitea
+export GITEA_URL=https://gitea.com    # the instance; a trailing slash is fine
+export GITEA_TOKEN=...                # an access token with issue and repository scope
+```
+
+**A missing variable is never a pass.** `provider_available` fails and names it, so every
+tool exits `2`. The token goes to curl in a mode-600 config file, never on its command line.
+
+The whole contract is implemented. Where Gitea differs:
+
+| Behaviour | On Gitea |
+| --- | --- |
+| Draft pull requests | Gitea has no draft flag. A `WIP: ` title prefix makes one, and the API's `draft` field is derived from it |
+| Issue dependencies | On by default, but a repo can switch them off. `provider_supports_deps` reads that repo's `internal_tracker.enable_issue_dependencies` and degrades when it is off |
+| `blockedBy` in `provider_issues` | Read per issue from `/issues/{n}/dependencies`, the issues that block `n`. One request per open issue; `PM_ASSUME_DEPS=1` turns it off |
+| Labels | Sent as label ids, as JSON numbers. A quoted id is read as a label name and silently dropped |
+| Close reasons | None. `PROVIDER_CLOSE_REASON_APPLIED` is always `0` |
+| PR reference | `#n`: issues and pull requests share one number space |
+| Timestamps | Gitea stamps the server's zone (`+02:00`); the provider converts to `Z` |
+
+**The fixtures come from the schema, not the wire.** `tests/gitea-provider.test.sh` runs
+against fixtures written to Gitea's published API schema, because no instance was
+available. The live round trip (`PM_PROVIDER=gitea PM_LIVE_REPO=owner/scratch sh
+tests/live.test.sh`) is still to run, pending a scratch instance.
 
 ## Three assumptions that are GitHub's, not the contract's
 

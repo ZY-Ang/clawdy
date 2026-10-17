@@ -79,6 +79,7 @@ fi
 # demanded gh whatever the provider, so no second backend could ever reach it.
 case "${PM_PROVIDER:-github}" in
   gitlab) LIVE_CLI=glab ;;
+  gitea)  LIVE_CLI=curl ;;
   *)      LIVE_CLI=gh ;;
 esac
 command -v "$LIVE_CLI" >/dev/null 2>&1 || {
@@ -110,7 +111,17 @@ provider_available || {
 TMP=${TMPDIR:-/tmp}/live-test.$$
 mkdir -p "$TMP"
 trap 'rm -rf "$TMP"' EXIT INT TERM
-"$LIVE_CLI" repo clone "$PM_LIVE_REPO" "$TMP/wt" 2>"$TMP/clone.err" \
+if [ "$(provider_name)" = gitea ]; then
+  # No clone CLI: plain git. The token rides in an environment-supplied header
+  # (token as username, as Gitea's basic auth accepts), so it stays off argv
+  # and out of the clone's config; the claim's push inherits it.
+  GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.extraHeader
+  GIT_CONFIG_VALUE_0="Authorization: Basic $(printf '%s:x-oauth-basic' "$GITEA_TOKEN" | base64 | tr -d '\n')"
+  export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+  git clone -q "${GITEA_URL%/}/$PM_LIVE_REPO.git" "$TMP/wt" 2>"$TMP/clone.err"
+else
+  "$LIVE_CLI" repo clone "$PM_LIVE_REPO" "$TMP/wt" 2>"$TMP/clone.err"
+fi \
   && ok "cloned $PM_LIVE_REPO" \
   || { bad "clone failed" "$(cat "$TMP/clone.err" 2>/dev/null || true)"; exit 1; }
 
@@ -285,6 +296,12 @@ case "$(provider_name)" in
     glab mr close "$PR_NUM" -R "$REPO" >/dev/null 2>&1 \
       && ok "the claim's draft MR is closed" \
       || bad "could not close the claim's draft MR -- close !$PR_NUM by hand" ;;
+  gitea)
+    printf '{"state":"closed"}' > "$TMP/close.json"
+    _gitea_api PATCH "repos/$REPO/pulls/$PR_NUM" "$TMP/close.json" >/dev/null \
+      && _gitea_api DELETE "repos/$REPO/branches/$BRANCH" >/dev/null \
+      && ok "the claim's draft PR is closed and its branch deleted" \
+      || bad "could not close the claim's draft PR -- close #$PR_NUM by hand" "$PROVIDER_ERR" ;;
   *) printf 'note: the claim protocol left the draft PR open -- the contract has no way to close one (see #56)\n' ;;
 esac
 

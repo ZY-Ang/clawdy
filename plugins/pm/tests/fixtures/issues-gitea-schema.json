@@ -1,0 +1,168 @@
+[
+  {
+    "id": 105,
+    "url": "https://gitea.com/api/v1/repos/owner/repo/issues/5",
+    "html_url": "https://gitea.com/owner/repo/issues/5",
+    "number": 5,
+    "user": {
+      "id": 1,
+      "login": "owner",
+      "full_name": "",
+      "email": "",
+      "avatar_url": "",
+      "html_url": "https://gitea.com/owner",
+      "visibility": "public"
+    },
+    "original_author": "",
+    "original_author_id": 0,
+    "title": "Which timeout should the retry use?",
+    "body": "",
+    "ref": "",
+    "assets": [],
+    "labels": [
+      {
+        "id": 12,
+        "name": "needs-human",
+        "exclusive": false,
+        "is_archived": false,
+        "color": "ededed",
+        "description": "",
+        "url": "https://gitea.com/api/v1/repos/owner/repo/labels/12"
+      },
+      {
+        "id": 15,
+        "name": "question",
+        "exclusive": false,
+        "is_archived": false,
+        "color": "ededed",
+        "description": "",
+        "url": "https://gitea.com/api/v1/repos/owner/repo/labels/15"
+      }
+    ],
+    "milestone": null,
+    "assignee": null,
+    "assignees": null,
+    "state": "open",
+    "is_locked": false,
+    "comments": 0,
+    "created_at": "2026-10-16T09:30:00+02:00",
+    "updated_at": "2026-10-17T10:15:00+02:00",
+    "closed_at": null,
+    "due_date": null,
+    "time_estimate": 0,
+    "pull_request": null,
+    "repository": {
+      "id": 1,
+      "name": "repo",
+      "owner": "owner",
+      "full_name": "owner/repo"
+    },
+    "pin_order": 0
+  },
+  {
+    "id": 104,
+    "url": "https://gitea.com/api/v1/repos/owner/repo/issues/4",
+    "html_url": "https://gitea.com/owner/repo/pulls/4",
+    "number": 4,
+    "user": {
+      "id": 1,
+      "login": "owner",
+      "full_name": "",
+      "email": "",
+      "avatar_url": "",
+      "html_url": "https://gitea.com/owner",
+      "visibility": "public"
+    },
+    "original_author": "",
+    "original_author_id": 0,
+    "title": "WIP: claim #3",
+    "body": "",
+    "ref": "",
+    "assets": [],
+    "labels": [],
+    "milestone": null,
+    "assignee": null,
+    "assignees": null,
+    "state": "open",
+    "is_locked": false,
+    "comments": 0,
+    "created_at": "2026-10-15T12:00:00+02:00",
+    "updated_at": "2026-10-15T12:00:00+02:00",
+    "closed_at": null,
+    "due_date": null,
+    "time_estimate": 0,
+    "pull_request": {
+      "merged": false,
+      "merged_at": null,
+      "draft": true,
+      "html_url": "https://gitea.com/owner/repo/pulls/4"
+    },
+    "repository": {
+      "id": 1,
+      "name": "repo",
+      "owner": "owner",
+      "full_name": "owner/repo"
+    },
+    "pin_order": 0
+  },
+  {
+    "id": 103,
+    "url": "https://gitea.com/api/v1/repos/owner/repo/issues/3",
+    "html_url": "https://gitea.com/owner/repo/issues/3",
+    "number": 3,
+    "user": {
+      "id": 1,
+      "login": "owner",
+      "full_name": "",
+      "email": "",
+      "avatar_url": "",
+      "html_url": "https://gitea.com/owner",
+      "visibility": "public"
+    },
+    "original_author": "",
+    "original_author_id": 0,
+    "title": "Retry backs off too slowly",
+    "body": "",
+    "ref": "",
+    "assets": [],
+    "labels": [
+      {
+        "id": 11,
+        "name": "task",
+        "exclusive": false,
+        "is_archived": false,
+        "color": "ededed",
+        "description": "",
+        "url": "https://gitea.com/api/v1/repos/owner/repo/labels/11"
+      },
+      {
+        "id": 14,
+        "name": "priority-high",
+        "exclusive": false,
+        "is_archived": false,
+        "color": "ededed",
+        "description": "",
+        "url": "https://gitea.com/api/v1/repos/owner/repo/labels/14"
+      }
+    ],
+    "milestone": null,
+    "assignee": null,
+    "assignees": null,
+    "state": "open",
+    "is_locked": false,
+    "comments": 0,
+    "created_at": "2026-10-14T08:00:00+02:00",
+    "updated_at": "2026-10-17T09:00:00+02:00",
+    "closed_at": null,
+    "due_date": null,
+    "time_estimate": 0,
+    "pull_request": null,
+    "repository": {
+      "id": 1,
+      "name": "repo",
+      "owner": "owner",
+      "full_name": "owner/repo"
+    },
+    "pin_order": 0
+  }
+]
