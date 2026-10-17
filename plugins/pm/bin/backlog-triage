@@ -12,13 +12,14 @@
 # working, issues with no axes so the order is flat, and needs-human wrong in
 # both directions at once.
 #
-# Five checks. Each was measured on a real backlog, not imagined:
+# Six checks. Each was measured on a real backlog, not imagined:
 #
 #   cycles       7 found, 3 real and blocking
 #   stale        a claim with no commit for STALE_HOURS (default 24)
 #   axes         0 of 118 issues carried a priority
 #   human        2 answered issues still labelled, 9 needing it unlabelled
 #   orphans      45 findings against branches with no pull request
+#   saturation   one band holding most of the queue, so priority separates nothing
 #
 # Exit: 0 nothing wrong · 1 something to fix · 2 could not tell.
 # A cycle always means 1: an order that silently picks one side of it is an
@@ -29,6 +30,9 @@
 #   BACKLOG_DEPS_JSON     the dependency graph, replacing whatever the issues carry
 #   BACKLOG_NOW           a fixed epoch
 #   STALE_HOURS           how long a claim may go quiet (default 24)
+#   ESCALATE_DAYS         backlog-queue's ageing step, read so both agree (21)
+#   SATURATION_PCT        share of the queue in one band that is too much (50)
+#   SATURATION_MIN        below this many competing issues, say nothing (5)
 
 set -eu
 
@@ -44,7 +48,7 @@ pm_load_provider || exit 2
 . "$HERE/../lib/deps.sh"
 . "$HERE/../lib/agent-prefix.sh"
 
-usage() { sed -n '2,31p' "$0"; exit "${1:-0}"; }
+usage() { sed -n '2,35p' "$0"; exit "${1:-0}"; }
 
 ONLY=""; QUIET=0; REPO=${PM_REPO:-}
 while [ $# -gt 0 ]; do
@@ -58,8 +62,8 @@ while [ $# -gt 0 ]; do
 done
 
 case "$ONLY" in
-  ''|cycles|stale|axes|human|orphans) ;;
-  *) echo "backlog-triage: --only must be one of: cycles stale axes human orphans" >&2; exit 2 ;;
+  ''|cycles|stale|axes|human|orphans|saturation) ;;
+  *) echo "backlog-triage: --only must be one of: cycles stale axes human orphans saturation" >&2; exit 2 ;;
 esac
 
 command -v jq >/dev/null || { echo "backlog-triage: jq is not installed" >&2; exit 2; }
@@ -67,6 +71,18 @@ command -v jq >/dev/null || { echo "backlog-triage: jq is not installed" >&2; ex
 NOW=${BACKLOG_NOW:-$(date -u +%s)}
 STALE=${STALE_HOURS:-24}
 [ "$STALE" -ge 1 ] 2>/dev/null || { echo "backlog-triage: STALE_HOURS must be >= 1" >&2; exit 2; }
+# Read from the same variable backlog-queue ages by. Two copies of the ageing
+# step would drift, and this check exists to describe the order that command
+# actually produces.
+ESC=${ESCALATE_DAYS:-21}
+[ "$ESC" -ge 1 ] 2>/dev/null || { echo "backlog-triage: ESCALATE_DAYS must be >= 1" >&2; exit 2; }
+SAT_PCT=${SATURATION_PCT:-50}
+[ "$SAT_PCT" -ge 1 ] 2>/dev/null && [ "$SAT_PCT" -le 100 ] \
+  || { echo "backlog-triage: SATURATION_PCT must be 1..100" >&2; exit 2; }
+# A one-issue backlog is 100% top band and that says nothing at all. The floor
+# is what stops the check firing on a backlog too small to have a shape.
+SAT_MIN=${SATURATION_MIN:-5}
+[ "$SAT_MIN" -ge 1 ] 2>/dev/null || { echo "backlog-triage: SATURATION_MIN must be >= 1" >&2; exit 2; }
 
 if [ -n "${BACKLOG_ISSUES_JSON:-}" ]; then
   JSON=$(cat "$BACKLOG_ISSUES_JSON") || { echo "backlog-triage: cannot read $BACKLOG_ISSUES_JSON" >&2; exit 2; }
@@ -108,7 +124,9 @@ scan() {
   # `set -e` terminates this subshell at a bare failing pipeline, so `_rc=$?`
   # and the diagnostic below never ran -- the fix was unreachable. The
   # pipeline is the `if` condition now, where -e does not apply.
-  if ! printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson stale "$STALE" --arg mark "$AGENT_MARK" '
+  if ! printf '%s' "$JSON" | jq -r --argjson now "$NOW" --argjson stale "$STALE" \
+       --argjson esc "$ESC" --argjson minpct "$SAT_PCT" --argjson min "$SAT_MIN" \
+       --arg mark "$AGENT_MARK" '
     def lbl: [ .labels[]? | (if type == "object" then .name else . end) | strings ];
     # GitLab stamps milliseconds ("...T10:12:28.895Z"), GitHub does not, and the
     # fromdateiso8601 builtin rejects the fractional part outright -- so every
@@ -132,6 +150,45 @@ scan() {
     def agent_last: (.comments // []) | if length == 0 then true
                     else (.[-1].body // "") | startswith($mark) end;
 
+    # Saturation is the one aggregate check: it is a fact about the whole
+    # ready set, not about any issue, so it reads the array rather than each
+    # element. Kept in this program anyway -- splitting it out would mean a
+    # sixth copy of the label and date handling above.
+    if $ARGS.named.check == "saturation" then
+      # Only what actually competes for queue position. A claimed issue is
+      # being worked, a finding is a sub-issue and a question is not queue
+      # work, so counting them would measure a list nobody is waiting on.
+      [ .[]
+        | select((.state // "OPEN") | ascii_upcase == "OPEN")
+        | select((has("needs-human") | not) and (has("finding") | not)
+                 and (has("claimed") | not))
+        | . as $i | (lbl) as $L
+        | (if   ($L | index("priority-high")) then 3
+           elif ($L | index("priority-med"))  then 2
+           elif ($L | index("priority-low"))  then 1
+           else 2 end) as $base
+        | ([0, ((($now - (($i.createdAt | isodate) // $now)) / 86400) | floor)] | max) as $days
+        # backlog-queue ages a priority upward one whole step per $esc and caps
+        # at 3. Measuring the LABEL instead would miss the thing being measured:
+        # a band fills mostly with issues that arrived below it.
+        | ([3, ($base + (($days / $esc) | floor))] | min) as $eff
+        | { n: $i.number, t: ($i.title // ""), base: $base, eff: $eff, days: $days,
+            lab: ([ $L[] | select(startswith("priority-")) ] | first) } ] as $q
+      | ($q | length) as $total
+      | if $total < $min then empty
+        else
+          ([ $q[] | .eff ] | max) as $top
+          | [ $q[] | select(.eff == $top) ] as $band
+          | ((($band | length) * 100 / $total) | floor) as $share
+          | if $share < $minpct then empty
+            else
+              "\($band | length) of \($total) competing issues (\($share)%) sit at effective priority \($top), the top band in use",
+              "\([ $band[] | select(.base < .eff) ] | length) of them were labelled lower and aged into it",
+              ( $band | sort_by(.n)[]
+                | "#\(.n)  \(.lab // "unlabelled")\(if .base < .eff then " + \(.days)d" else "" end)  \(.t)" )
+            end
+        end
+    else
     .[] | select((.state // "OPEN") | ascii_upcase == "OPEN") |
       if   $ARGS.named.check == "stale"
       then select(has("claimed") and (age > $stale))
@@ -152,6 +209,7 @@ scan() {
                   and (((.parent // null) == null)))
            | "#\(.number)  finding with no parent issue  \(.title)"
       else empty end
+    end
   ' --arg check "$1" 2>"$_serr"; then
     # Not 2>/dev/null with the status dropped. Under set -eu a jq failure made
     # OUT=$(scan ...) inherit jq's exit 5 -- a code this script never otherwise
@@ -181,6 +239,10 @@ fi
 if want orphans; then
   OUT=$(scan orphans) || exit 2
   [ -n "$OUT" ] && report "findings with no home -- these compete with real work for queue position" "$OUT"
+fi
+if want saturation; then
+  OUT=$(scan saturation) || exit 2
+  [ -n "$OUT" ] && report "priority saturation -- one band holds most of the queue, so priority separates nothing inside it and the order comes from the tie-breaks" "$OUT"
 fi
 
 if [ "$found" -eq 0 ]; then
