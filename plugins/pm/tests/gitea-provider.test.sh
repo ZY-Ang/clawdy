@@ -314,6 +314,21 @@ case "$w" in *"REQ POST https://gitea.com/api/v1/repos/owner/repo/labels"*'BODY 
 ( FAKE_CURL_FAIL=1; export FAKE_CURL_FAIL; run provider_ensure_label x owner/repo ) >/dev/null 2>&1
 [ $? -eq 0 ] && ok "ensure-label is 0 even when the backend is down" || bad "ensure-label rc"
 
+# Org-level labels: the base routes have no org route, so the fake answers 404 as for a user-owned repo.
+printf '[{"id":21,"name":"size-s","color":"ededed"}]' > "$TMP/org-labels.json"
+ORG=$(routes_with "GET */orgs/owner/labels[?]*page=1 200 $TMP/org-labels.json" "GET */orgs/owner/labels[?]* 200 $TMP/empty.json")
+w=$(FAKE_ROUTES=$ORG wire provider_ensure_label size-s owner/repo)
+case "$w" in *"REQ POST"*) bad "ensure-label finds an org-level label instead of duplicating it" "$w" ;;
+  *"REQ GET https://gitea.com/api/v1/orgs/owner/labels"*) ok "ensure-label finds an org-level label instead of duplicating it" ;;
+  *) bad "ensure-label finds an org-level label instead of duplicating it" "$w" ;; esac
+w=$(FAKE_ROUTES=$ORG wire provider_label 5 size-s add owner/repo)
+case "$w" in *'BODY {"labels":[21]}'*) ok "an org label id is sent as a number" ;; *) bad "org label add wire" "$w" ;; esac
+e=$(echo x | rcerr provider_create_issue owner/repo T task nope)
+case "$e" in "rc=1 no such label in owner/repo: nope") ok "a 404 for org labels is not an error" ;; *) bad "org labels 404" "$e" ;; esac
+R=$(routes_with "GET */orgs/owner/labels[?]* 500 $FIX/error-422-gitea-schema.json")
+e=$(echo x | FAKE_ROUTES=$R rcerr provider_create_issue owner/repo T nope)
+case "$e" in "rc=1 HTTP 500 "*) ok "an org-labels failure other than 404 is an error" ;; *) bad "org labels 500" "$e" ;; esac
+
 w=$(wire provider_comment 5 "done, pushed" owner/repo)
 case "$w" in *"REQ POST https://gitea.com/api/v1/repos/owner/repo/issues/5/comments"*'BODY {"body":"done, pushed"}'*)
   ok "comment posts the body" ;; *) bad "comment wire" "$w" ;; esac
