@@ -148,7 +148,9 @@ if [ -n "$REPO" ]; then
   #   https://host/group/sub/proj.git   git@host:group/sub/proj.git
   _here=$(printf '%s' "$_url" \
     | sed -e 's|\.git$||' -e 's|^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*/||' -e 's|^.*:||')
-  if [ -n "$_here" ] && [ "$_here" != "$REPO" ]; then
+  # Match the trailing path parts only: a sub-path install puts more in front.
+  case "/$_here" in */"$REPO") _here_ok=1 ;; *) _here_ok=0 ;; esac
+  if [ -n "$_here" ] && [ "$_here_ok" -eq 0 ]; then
     echo "backlog-claim: --repo is '$REPO' but this checkout pushes to '$_here'" >&2
     echo "               the branch would land in one repository and the pull" >&2
     echo "               request in the other. Run this from a checkout of" >&2
@@ -185,9 +187,13 @@ fi
 # "Could not ask" is not "no PR": reading it as one opens a second PR for a
 # branch that already has one, which the backend refuses with an error that
 # then blames the create.
-EXISTING_PR=$(provider_find_pr "$BRANCH" "$REPO" 2>/dev/null) || {
+# Provider calls write to a temp file, not $( ): a subshell drops PROVIDER_ERR.
+OUT=$(mktemp) || { echo "backlog-claim: could not create a temp file" >&2; exit 2; }
+trap 'rm -f "$OUT"' EXIT
+provider_find_pr "$BRANCH" "$REPO" >"$OUT" 2>/dev/null || {
   echo "backlog-claim: could not ask $(provider_name) whether $BRANCH already has a pull request" >&2
   say_backend; exit 2; }
+EXISTING_PR=$(cat "$OUT")
 # The glyph is the backend's: #n on GitHub, !n on GitLab, where #n would read
 # as an issue reference pointing somewhere wrong.
 PR_MARK=$(provider_pr_ref_mark)
@@ -210,10 +216,11 @@ fi
 
 # A branch with no commits cannot carry a pull request, so the claim itself is
 # the first commit. It also leaves the binding in git history, where it survives
-# the issue being edited.
+# the issue being edited. No closing keyword here: a commit cannot be edited
+# when the issue turns out to span several PRs; the PR body can.
 if [ -z "$EXISTING_PR" ]; then
   git commit -q --allow-empty -m "claim #$NUM: $TITLE" \
-    -m "Claimed at $STAMP. Closes #$NUM." || {
+    -m "Claimed at $STAMP." || {
     echo "backlog-claim: could not record the claim commit" >&2; exit 2; }
 
   git push -q -u origin "$BRANCH" 2>/dev/null || {
@@ -226,7 +233,8 @@ this work should become a thread on this pull request, not another open issue
 competing for queue position.
 
 Closes #$NUM.")
-  PR_URL=$(provider_open_draft_pr "$BRANCH" "$TITLE" "$PR_BODY" "$BASE" "$REPO") || PR_URL=""
+  PR_URL=""
+  provider_open_draft_pr "$BRANCH" "$TITLE" "$PR_BODY" "$BASE" "$REPO" >"$OUT" && PR_URL=$(cat "$OUT")
   [ -n "$PR_URL" ] || { echo "backlog-claim: branch pushed but the draft PR was not created" >&2; say_backend; exit 2; }
 else
   PR_URL="$PR_MARK$EXISTING_PR"
