@@ -111,11 +111,12 @@ cover — a change description, a review comment, a threaded reply — add the m
 because nothing else will.
 
 **The configured provider is authoritative; no CLI named anywhere is.** `PM_PROVIDER` chooses the
-backend and `PM_REPO` the repository — `gh` and `glab` are two of several, and on a given machine
-either may be absent. So a missing or denied CLI is evidence about that command and nothing else:
-it does **not** mean the tracker is unreachable. `file-issue` and `questions list` answer that
-question. Answering it any other way is how an agent reported an unreachable tracker and then
-invented the content it believed it could not fetch.
+backend and `PM_REPO` the repository — `gh`, `glab` and Gitea's `gitea-api` (from `devloop`) are
+three of several, and on a given machine any may be absent. So a missing or denied CLI is evidence
+about that command and nothing else: it does **not** mean the tracker is unreachable.
+`file-issue` and `questions list` answer that question. Answering it any other way is how an
+agent reported an unreachable tracker and then invented the content it believed it could not
+fetch.
 
 Adding it twice is harmless; the tools are idempotent and check before prepending.
 
