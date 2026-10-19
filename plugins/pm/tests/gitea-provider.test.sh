@@ -349,6 +349,24 @@ o=$(run provider_find_pr no/such owner/repo; echo "rc=$?")
 if ( FAKE_CURL_FAIL=1; export FAKE_CURL_FAIL; run provider_find_pr claude/retry owner/repo ) >/dev/null 2>&1
 then bad "find-pr fails when it could not ask"; else ok "find-pr fails when it could not ask"; fi
 
+# --- what a claim's PR is doing ----------------------------------------------
+act=$(run provider_pr_activity claude/retry owner/repo)
+[ "$act" = "$(printf 'true\t2026-10-17T16:44:16Z')" ] \
+  && ok "pr-activity: this repo's PR, not a fork's, draft and updatedAt in UTC" || bad "pr-activity" "[$act]"
+jq 'map(.draft = false)' "$FIX/pulls-gitea-schema.json" > "$TMP/pulls-ready.json"
+R=$(routes_with "GET */repos/owner/repo/pulls[?]*page=1 200 $TMP/pulls-ready.json")
+act=$(FAKE_ROUTES=$R run provider_pr_activity claude/retry owner/repo)
+case "$act" in false*) ok "pr-activity: a ready PR is not a draft" ;; *) bad "pr-activity ready" "[$act]" ;; esac
+o=$(run provider_pr_activity no/such owner/repo; echo "rc=$?")
+[ "$o" = "rc=0" ] && ok "pr-activity: no PR is empty output and 0" || bad "pr-activity none" "$o"
+e=$(FAKE_CURL_FAIL=1 rcerr provider_pr_activity claude/retry owner/repo)
+case "$e" in "rc=1 curl: "*"Connection refused"*) ok "pr-activity: a dead backend is a failure, with curl's words" ;;
+  *) bad "pr-activity dead backend" "$e" ;; esac
+R=$(routes_with "GET */repos/owner/repo/pulls[?]* 500 $FIX/error-422-gitea-schema.json")
+e=$(FAKE_ROUTES=$R rcerr provider_pr_activity claude/retry owner/repo)
+case "$e" in "rc=1 HTTP 500 "*) ok "pr-activity: an HTTP error is a failure, not 'no PR'" ;;
+  *) bad "pr-activity HTTP error" "$e" ;; esac
+
 # --- the dependency graph ----------------------------------------------------
 [ "$(run provider_issue_id 3 owner/repo)" = 3 ] && ok "issue_id is the number the body takes" || bad "issue_id"
 if run provider_issue_id 404 owner/repo >/dev/null 2>&1; then bad "issue_id fails for a missing issue"
@@ -399,7 +417,8 @@ LEAKD=$(mktemp -d)
   provider_issues owner/repo; provider_needs_human owner/repo; provider_issue 404 owner/repo
   echo x | provider_create_issue owner/repo T task; echo x | provider_create_issue owner/repo T nope
   provider_label 5 claimed add owner/repo; provider_link 3 4 owner/repo; provider_unlink 3 x owner/repo
-  provider_find_pr claude/retry owner/repo; provider_close_issue 5 "" owner/repo
+  provider_find_pr claude/retry owner/repo; provider_pr_activity claude/retry owner/repo
+  provider_close_issue 5 "" owner/repo
   FAKE_CURL_FAIL=1 provider_issues owner/repo ) >/dev/null 2>&1
 left=$(find "$LEAKD" -type f | wc -l | tr -d ' ')
 [ "$left" = 0 ] && ok "no temp file survives, token config included" || bad "temp files leaked" "$(ls "$LEAKD")"
