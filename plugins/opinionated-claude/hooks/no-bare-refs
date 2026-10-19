@@ -85,6 +85,7 @@
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$HERE/../lib/explain.sh"
+. "$HERE/../lib/transcript.sh"
 
 INPUT=$(cat 2>/dev/null || true)
 
@@ -99,13 +100,14 @@ TRANSCRIPT=$(field transcript_path)
 [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
-LAST=$(jq -rs '
+TURN=$(tail_turn "$TRANSCRIPT")
+LAST=$(printf '%s\n' "$TURN" | jq -rs '
   [ .[]
     | select(.type == "assistant")
     | .message.content
     | if type == "array" then map(select(.type == "text") | .text) | join("\n") else . end
   ] | last // ""
-' "$TRANSCRIPT" 2>/dev/null) || exit 0
+' 2>/dev/null) || exit 0
 [ -n "$LAST" ] || exit 0
 
 # Fences first: the inline-backtick sed below would eat a fence marker's third

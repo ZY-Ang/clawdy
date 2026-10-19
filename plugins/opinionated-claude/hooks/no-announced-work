@@ -40,6 +40,7 @@
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$HERE/../lib/explain.sh"
+. "$HERE/../lib/transcript.sh"
 
 INPUT=$(cat 2>/dev/null || true)
 
@@ -53,13 +54,14 @@ TRANSCRIPT=$(field transcript_path)
 [ -n "$TRANSCRIPT" ] && [ -f "$TRANSCRIPT" ] || exit 0
 
 command -v jq >/dev/null 2>&1 || exit 0
-LAST=$(jq -rs '
+TURN=$(tail_turn "$TRANSCRIPT")
+LAST=$(printf '%s\n' "$TURN" | jq -rs '
   [ .[]
     | select(.type == "assistant")
     | .message.content
     | if type == "array" then map(select(.type == "text") | .text) | join("\n") else . end
   ] | last // ""
-' "$TRANSCRIPT" 2>/dev/null) || exit 0
+' 2>/dev/null) || exit 0
 [ -n "$LAST" ] || exit 0
 
 # Same window as the sibling, and for the same reason: the tell is the closing
@@ -83,7 +85,7 @@ TAIL=$(printf '%s' "$LAST" | grep -v '^[[:space:]]*$' | tail -10 | tr 'A-Z' 'a-z
 # Scope is the current turn: everything after the last human message. A human
 # turn carries a string or text content; a tool result is type "user" with
 # tool_result content, which is why the filter is on shape rather than on type.
-ARMED=$(jq -rs '
+ARMED=$(printf '%s\n' "$TURN" | jq -rs '
   # index of the last genuinely-human message
   ( [ range(0; length) as $i
       | select(.[$i].type == "user")
@@ -105,7 +107,7 @@ ARMED=$(jq -rs '
         )
       | .name ]
   | length
-' "$TRANSCRIPT" 2>/dev/null) || ARMED=0
+' 2>/dev/null) || ARMED=0
 case "$ARMED" in ''|*[!0-9]*) ARMED=0 ;; esac
 
 # Something in this turn will wake it again, so a stated next step is a plan
