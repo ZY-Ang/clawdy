@@ -153,6 +153,18 @@ provider_find_pr() {
      ${_repo:+--repo "$_repo"} 2>/dev/null | jq -r '.[0].number // empty' 2>/dev/null
 }
 
+# provider_pr_activity <branch> [repo] -> "<draft>\t<updatedAt>" for the open PR
+# on <branch>, or nothing when there is none. Non-zero only when gh could not be
+# asked -- captured before jq, because after a pipe the status is jq's, and
+# "no PR" and "could not tell" must stay two different answers.
+provider_pr_activity() {
+  _branch=${1:?}; _repo=${2:-}
+  # shellcheck disable=SC2086
+  _out=$(gh pr list --head "$_branch" --state open --json isDraft,updatedAt \
+           ${_repo:+--repo "$_repo"} 2>/dev/null) || return 1
+  printf '%s' "$_out" | jq -r '.[0] // empty | "\(.isDraft)\t\(.updatedAt)"'
+}
+
 # --- the dependency graph, written ------------------------------------------
 #
 #   provider_issue_id      the NUMERIC id behind an issue number

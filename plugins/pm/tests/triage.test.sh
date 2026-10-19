@@ -91,6 +91,81 @@ iss <<'JSON'
 JSON
 [ "$(rc --only stale)" -eq 0 ] && ok "a fresh claim is not stale" || bad "fresh claim clean" "$(t --only stale)"
 
+# --- a claim is worked on its pull request, not on the issue -----------------
+# The issue goes quiet the moment backlog-claim comments on it, because the work
+# moves to the PR. Reading the issue clock fired on every claim done correctly.
+# Each case: the issue itself has been quiet for 456h.
+claimed() {
+  cat > "$TMP/i.json" <<JSON
+[{"number":3,"title":"claimed work","state":"OPEN","labels":[{"name":"claimed"},{"name":"priority-med"},{"name":"urgency-low"},{"name":"size-m"}],
+  "createdAt":"2026-08-01T00:00:00Z","updatedAt":"2026-08-01T00:00:00Z","blockedBy":[],
+  "comments":[$1]}]
+JSON
+}
+CLAIM='{"author":"bot","body":"🤖\n\nClaimed -> `claude/the-work` (from `main`) at 2026-08-01T00:00:00Z.\n\nhttps://example/pull/7"}'
+prs() { printf '%s' "$1" > "$TMP/p.json"; }
+tp()  { BACKLOG_ISSUES_JSON="$TMP/i.json" BACKLOG_PRS_JSON="$TMP/p.json" sh "$BIN" "$@" 2>&1; }
+rcp() { BACKLOG_ISSUES_JSON="$TMP/i.json" BACKLOG_PRS_JSON="$TMP/p.json" sh "$BIN" "$@" >/dev/null 2>&1; echo $?; }
+
+# What actually happened: issue 99 "quiet for 62h" while its PR sat ready to merge.
+claimed "$CLAIM"
+prs '{"claude/the-work":{"draft":false,"updatedAt":"2026-08-01T00:00:00Z"}}'
+[ "$(rcp --only stale)" -eq 0 ] && ok "a claim whose PR is ready for review is not stale" \
+  || bad "ready-for-review is a human turn" "$(tp --only stale)"
+
+prs '{"claude/the-work":{"draft":true,"updatedAt":"2026-08-19T23:00:00Z"}}'
+[ "$(rcp --only stale)" -eq 0 ] && ok "a draft PR that moved an hour ago is not stale, however quiet the issue" \
+  || bad "draft PR activity counts" "$(tp --only stale)"
+
+prs '{"claude/the-work":{"draft":true,"updatedAt":"2026-08-18T00:00:00Z"}}'
+[ "$(rcp --only stale)" -eq 1 ] && ok "a draft PR quiet past STALE_HOURS is stale" \
+  || bad "quiet draft -> 1" "$(tp --only stale)"
+# 48h is the PR's clock. The issue's would say 456h.
+case "$(tp --only stale)" in *"draft pull request quiet for 48h"*) ok "and is measured on the PR, not the issue" ;;
+  *) bad "measured on the PR" "$(tp --only stale)" ;; esac
+
+# A claim whose PR is gone -- closed, or never opened -- is the shape the claim
+# order exists to prevent: the queue hides an issue nothing is working on.
+prs '{}'
+case "$(tp --only stale)" in *"no open pull request found, quiet for 456h"*)
+    ok "a claim with no open PR falls back to the issue, and says why" ;;
+  *) bad "no-PR fallback" "$(tp --only stale)" ;; esac
+
+# Released and re-claimed onto a new branch: the LATEST claim is the live one.
+claimed "$CLAIM, $(printf '%s' "$CLAIM" | sed 's/claude\/the-work/claude\/second-try/')"
+prs '{"claude/second-try":{"draft":true,"updatedAt":"2026-08-19T23:00:00Z"}}'
+[ "$(rcp --only stale)" -eq 0 ] && ok "a re-claim is read from the latest claim comment" \
+  || bad "latest claim wins" "$(tp --only stale)"
+
+# --- a fixture run never reaches the network ---------------------------------
+# With issues from a file and no PR file, the provider is not asked -- a test
+# that quietly called a live backend would pass or fail on the weather.
+mkdir -p "$TMP/fakebin"
+printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s"\necho "[]"\n' "$TMP/gh.log" > "$TMP/fakebin/gh"
+chmod +x "$TMP/fakebin/gh"
+claimed "$CLAIM"
+rm -f "$TMP/gh.log"
+PATH="$TMP/fakebin:$PATH" BACKLOG_ISSUES_JSON="$TMP/i.json" sh "$BIN" --only stale >/dev/null 2>&1
+if grep -q "pr list" "$TMP/gh.log" 2>/dev/null; then bad "a fixture run reached the provider" "$(cat "$TMP/gh.log")"
+else ok "a fixture run never asks the provider about PRs"; fi
+
+# --- a backend that cannot answer is not a quiet claim -----------------------
+# Live mode: the issue list comes back, the PR question fails. Treating that as
+# "no PR" would report every claim stale; treating it as "fine" would hide one.
+cat > "$TMP/fakebin/gh" <<GH
+#!/bin/sh
+case "\$1 \$2" in
+  "issue list") cat "$TMP/i.json" ;;
+  "pr list") echo "gh: HTTP 502" >&2; exit 1 ;;
+  *) exit 0 ;;
+esac
+GH
+chmod +x "$TMP/fakebin/gh"
+out=$(PATH="$TMP/fakebin:$PATH" PM_ASSUME_DEPS=1 sh "$BIN" --only stale --repo o/n 2>&1); r=$?
+[ "$r" -eq 2 ] && ok "a PR lookup that fails exits 2, never a quiet pass" || bad "failed lookup -> 2" "rc=$r $out"
+case "$out" in *"could not ask"*"claude/the-work"*) ok "and names the branch it could not ask about" ;;
+  *) bad "names the branch" "$out" ;; esac
+
 # --- missing axes -------------------------------------------------------------
 iss <<'JSON'
 [{"number":1,"title":"bare","state":"OPEN","labels":[{"name":"task"}],

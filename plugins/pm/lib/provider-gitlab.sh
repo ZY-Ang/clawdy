@@ -240,6 +240,21 @@ provider_find_pr() {
   return "$_rc"
 }
 
+# provider_pr_activity <branch> [repo] -> "<draft>\t<updatedAt>" for the open MR
+# on <branch>, or nothing. Older GitLab says work_in_progress where newer says
+# draft; either one true means a draft.
+provider_pr_activity() {
+  _branch=${1:?}; _repo=${2:-}
+  _tmp=${TMPDIR:-/tmp}/pm-gitlab.$$.json
+  _glab_read mr list -s "$_branch" -F json ${_repo:+-R "$_repo"} --per-page 100 > "$_tmp"
+  _rc=$?
+  [ "$_rc" -eq 0 ] || { rm -f "$_tmp" 2>/dev/null; return "$_rc"; }
+  jq -r '.[0] // empty | "\(.draft // .work_in_progress // false)\t\(.updated_at)"' < "$_tmp" 2>/dev/null
+  _rc=$?
+  rm -f "$_tmp" 2>/dev/null
+  return "$_rc"
+}
+
 # provider_needs_human <repo> -> open issues awaiting a person, as JSON.
 #
 # The notes endpoint 401s anonymously even on a public project, where list and

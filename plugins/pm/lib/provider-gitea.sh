@@ -330,6 +330,22 @@ provider_find_pr() {
   return $_frc
 }
 
+# provider_pr_activity <branch> [repo] -> "<draft>\t<updatedAt>" for the open PR
+# from that branch of this repo, or nothing. Non-zero: could not ask.
+provider_pr_activity() {
+  _branch=${1:?}
+  _gitea_repo "${2:-}" || return 1
+  _pa=$(mktemp) || { PROVIDER_ERR="could not create a temp file"; return 1; }
+  _gitea_list "repos/$PM_GITEA_REPO/pulls?state=open" 100000 "$_pa" || { rm -f "$_pa"; return 1; }
+  jq -r --arg b "$_branch" --arg r "$PM_GITEA_REPO" "$_GITEA_JQ_DEFS"'
+    [ .[] | select(.head.ref == $b
+                   and ((.head.repo.full_name // "") | ascii_downcase) == ($r | ascii_downcase)) ]
+    | .[0] // empty | "\(.draft // false)\t\(.updated_at | utc)"' < "$_pa"
+  _parc=$?
+  rm -f "$_pa"
+  return $_parc
+}
+
 # provider_needs_human <repo> -> [{number, title, comments oldest first}].
 # Filtered here as well as in the query: Gitea drops an unknown label name from
 # the filter and then returns every open issue.
