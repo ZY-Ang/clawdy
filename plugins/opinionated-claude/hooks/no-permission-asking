@@ -23,6 +23,7 @@
 
 HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$HERE/../lib/explain.sh"
+. "$HERE/../lib/transcript.sh"
 
 INPUT=$(cat 2>/dev/null || true)
 
@@ -39,13 +40,14 @@ TRANSCRIPT=$(field transcript_path)
 # The last assistant message, as plain text. jq when present; without it the
 # guard stands down rather than guessing at JSON with a regex.
 command -v jq >/dev/null 2>&1 || exit 0
-LAST=$(jq -rs '
+TURN=$(tail_turn "$TRANSCRIPT")
+LAST=$(printf '%s\n' "$TURN" | jq -rs '
   [ .[]
     | select(.type == "assistant")
     | .message.content
     | if type == "array" then map(select(.type == "text") | .text) | join("\n") else . end
   ] | last // ""
-' "$TRANSCRIPT" 2>/dev/null) || exit 0
+' 2>/dev/null) || exit 0
 [ -n "$LAST" ] || exit 0
 
 # Only the closing lines, and only lines that are actually asking. A
