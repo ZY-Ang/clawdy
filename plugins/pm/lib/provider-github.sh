@@ -139,19 +139,26 @@ provider_label() {
 
 provider_open_draft_pr() {
   _branch=${1:?}; _title=${2:?}; _body=${3:?}; _base=${4:?}; _repo=${5:-}
+  # A here-doc, not a pipe: a pipeline runs _gh_read in a subshell and drops PROVIDER_ERR.
   # shellcheck disable=SC2086
-  printf '%s' "$_body" | _gh_read pr create --draft --head "$_branch" --base "$_base" \
-     --title "$_title" --body-file - ${_repo:+--repo "$_repo"}
+  _gh_read pr create --draft --head "$_branch" --base "$_base" \
+     --title "$_title" --body-file - ${_repo:+--repo "$_repo"} <<EOF
+$_body
+EOF
 }
 
 # Empty output means "no open pull request for that branch", which is different
 # from "could not ask" -- that is a non-zero return.
 provider_find_pr() {
   _branch=${1:?}; _repo=${2:-}
+  _tmp=${TMPDIR:-/tmp}/pm-github.$$.json
   # shellcheck disable=SC2086
-  _out=$(gh pr list --head "$_branch" --state open --json number \
-           ${_repo:+--repo "$_repo"} 2>/dev/null) || return 1
-  printf '%s' "$_out" | jq -r '.[0].number // empty' 2>/dev/null
+  _gh_read pr list --head "$_branch" --state open --json number \
+    ${_repo:+--repo "$_repo"} > "$_tmp" || { rm -f "$_tmp"; return 1; }
+  jq -r '.[0].number // empty' < "$_tmp" 2>/dev/null
+  _rc=$?
+  rm -f "$_tmp"
+  return "$_rc"
 }
 
 # provider_pr_activity <branch> [repo] -> "<draft>\t<updatedAt>" for the open PR

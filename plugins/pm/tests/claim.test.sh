@@ -36,7 +36,9 @@ printf '%s\n' "$*" >> "$GH_CALLS"
 case "$1 $2" in
   "pr list")   [ "${GH_PR_LIST_FAIL:-0}" = 1 ] && { echo "gh: HTTP 502" >&2; exit 1; }
                [ "${GH_PR_EXISTS:-0}" = 1 ] && echo '[{"number":7}]' || echo '[]' ;;
-  "pr create") echo "https://github.com/o/n/pull/9" ;;
+  "pr create") cat > "$GH_CALLS.body"
+               [ "${GH_PR_CREATE_FAIL:-0}" = 1 ] && { echo "gh: head branch not found" >&2; exit 1; }
+               echo "https://github.com/o/n/pull/9" ;;
   "issue view") cat "$GH_ISSUE" ;;
   *) : ;;
 esac
@@ -114,6 +116,15 @@ if ( cd "$TMP/wt" && git log -1 --format=%s claude/fix-the-parser-twice | grep -
 else bad "claim commit"; fi
 if grep -q 'issue comment 42' "$CALLS"; then ok "and commented on the issue"
 else bad "comment posted" "$(cat "$CALLS")"; fi
+
+# A commit cannot be edited when the issue spans several PRs, so it never
+# closes the issue; the PR body, which can be edited, does.
+msg=$( cd "$TMP/wt" && git log -1 --format=%B claude/fix-the-parser-twice )
+if printf '%s' "$msg" | grep -Eiq '(close|fix|resolve)[sd]? #42'; then
+  bad "the claim commit carries no closing keyword" "$msg"
+else ok "the claim commit carries no closing keyword"; fi
+if grep -q 'Closes #42' "$CALLS.body" 2>/dev/null; then ok "the draft PR body closes the issue"
+else bad "the draft PR body closes the issue" "$(cat "$CALLS.body" 2>/dev/null)"; fi
 
 # --- idempotence: the whole point ---------------------------------------------
 mkrepo; issue '{"number":42,"title":"Fix the parser, twice","state":"OPEN","labels":[{"name":"claimed"}]}'
@@ -241,6 +252,14 @@ accepts "an https remote matching --repo is accepted" "https://github.com/owner/
 accepts "an ssh remote matching --repo is accepted"   "git@github.com:owner/name.git"      owner/name
 # A subgroup path is the shape that breaks a naive basename comparison.
 accepts "a nested group path matching --repo is accepted" "https://gitlab.com/group/sub/proj.git" group/sub/proj
+accepts "a sub-path install matching --repo is accepted" "https://git.example.com/sub/owner/name.git" owner/name
+
+mkrepo; issue "$OPEN"
+( cd "$TMP/wt" && git remote set-url origin "https://git.example.com/sub/owner/name.git" ) 2>/dev/null
+case "$(claim 42 --repo ner/name --dry-run 2>&1)" in
+  *"this checkout pushes to"*) ok "a --repo matching only part of a path segment is refused" ;;
+  *) bad "a --repo matching only part of a path segment is refused" ;;
+esac
 
 # And with no --repo at all, nothing changes for anyone relying on today's behaviour.
 mkrepo; issue "$OPEN"
@@ -264,6 +283,16 @@ case "$out" in *"could not ask"*) ok "and says the lookup failed, not the create
   *) bad "names the lookup" "$out" ;; esac
 if grep -q "pr create" "$CALLS"; then bad "a failed lookup went on to open a PR" "$(cat "$CALLS")"
 else ok "and never goes on to open a PR"; fi
+case "$out" in *"HTTP 502"*) ok "a failed lookup shows the backend's own words" ;;
+  *) bad "a failed lookup shows the backend's own words" "$out" ;; esac
+
+mkrepo; issue "$OPEN"
+export GH_PR_CREATE_FAIL=1
+out=$(claim 42); r=$?
+unset GH_PR_CREATE_FAIL
+case "$out" in *"draft PR was not created"*"head branch not found"*)
+    ok "a failed PR create shows the backend's own words" ;;
+  *) bad "a failed PR create shows the backend's own words" "rc=$r $out" ;; esac
 
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
