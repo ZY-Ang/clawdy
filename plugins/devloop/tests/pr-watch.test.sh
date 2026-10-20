@@ -29,7 +29,7 @@ case_() {
   cat > "$TMP/$name.json" <<EOF
 {"number":42,"title":"Add a thing that works","isDraft":$3,"state":"$4",
  "mergeable":"$5","mergeStateStatus":"$6","reviewDecision":$7,
- "statusCheckRollup":$8}
+ "statusCheckRollup":$8,"reviewThreads":[]}
 EOF
   assert "$name" "$want"
 }
@@ -586,6 +586,101 @@ chmod +x "$TMP/repoprov"
 if grep -q 'repo=owner/target' "$TMP/prov.log"
 then printf 'ok   %-22s the provider is told too\n' repo-provider
 else fails=$((fails + 1)); printf 'FAIL %-22s log: %s\n' repo-provider "$(head -1 "$TMP/prov.log")"; fi
+
+# --- review threads -----------------------------------------------------------
+# thr <name> <want-exit> <glob in output> <reviewThreads|ABSENT> [bots] [mergeStateStatus] [review]
+thr() {
+  ran=$((ran + 1))
+  if [ "$4" = ABSENT ]; then rt=''; else rt=",\"reviewThreads\":$4"; fi
+  printf '{"number":42,"title":"t","isDraft":false,"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"%s","reviewDecision":%s,"statusCheckRollup":[]%s}\n' \
+    "${6:-CLEAN}" "${7:-null}" "$rt" > "$TMP/$1.json"
+  out=$(PR_WATCH_BOTS="${5:-}" PR_WATCH_JSON="$TMP/$1.json" sh "$BIN" 2>&1); rc=$?
+  case "$rc:$out" in
+    "$2:"*$3*) printf 'ok   %-22s exit %s\n' "$1" "$rc" ;;
+    *) fails=$((fails + 1)); printf 'FAIL %-22s exit %s, wanted %s and "%s"\n' "$1" "$rc" "$2" "$3"
+       printf '%s\n' "$out" | sed 's/^/       | /' ;;
+  esac
+}
+t() { printf '{"isResolved":%s,"path":%s,"comments":[%s]}' "$1" "$2" "$3"; }
+MK='{"author":"agent","isBot":false,"body":"🤖\n\nThe retry has no backoff."}'
+MK2='{"author":"agent","isBot":false,"body":"🤖\n\nFixed in abc1234."}'
+FLAG='{"author":"agent","isBot":false,"body":"🤖\n\nThis contradicts a recorded decision.\nneeds-human: keep the retry?"}'
+HU='{"author":"alice","isBot":false,"body":"Why not reuse the helper?"}'
+BOT='{"author":"reviewer","isBot":true,"body":"Possible nil dereference."}'
+BOTFLAG='{"author":"reviewer","isBot":true,"body":"needs-human: unsure"}'
+LISTED='{"author":"ci-reviewer","isBot":false,"body":"Unused variable."}'
+
+thr thr-none           0 'READY TO MERGE — every gate passed' '[]'
+thr thr-absent         0 'READY FOR REVIEW — every gate passed; threads not checked' ABSENT
+thr thr-null           0 'READY FOR REVIEW — every gate passed; threads not checked' null
+thr thr-absent-hooks   0 'READY FOR REVIEW — green; a pre-receive hook still runs on merge; threads not checked' ABSENT '' HAS_HOOKS '"APPROVED"'
+thr thr-resolved       0 'READY TO MERGE' "[$(t true '"a.sh"' "$MK")]"
+thr thr-marked-open    1 'NOT READY — unresolved bot thread(s); fix, reply with the fixing commit, then resolve:*a.sh: The retry has no backoff.' \
+  "[$(t false '"a.sh"' "$MK,$MK2")]"
+thr thr-no-path        1 'NOT READY*conversation: The retry' "[$(t false null "$MK")]"
+thr thr-bot-typename   1 'NOT READY*b.go: Possible nil dereference.' "[$(t false '"b.go"' "$BOT")]"
+thr thr-listed-bot     1 'NOT READY*c.py: Unused variable.' "[$(t false '"c.py"' "$LISTED")]" 'x, ci-reviewer'
+thr thr-unlisted       0 'READY FOR REVIEW — every gate passed; open thread(s) for a person:*c.py: Unused variable.' \
+  "[$(t false '"c.py"' "$LISTED")]"
+thr thr-human          0 'READY FOR REVIEW*a.sh: The retry' "[$(t false '"a.sh"' "$MK,$HU,$MK2")]"
+thr thr-flagged        0 'READY FOR REVIEW*a.sh: The retry' "[$(t false '"a.sh"' "$MK,$FLAG")]"
+thr thr-flag-not-last  1 'NOT READY*a.sh' "[$(t false '"a.sh"' "$FLAG,$MK2")]"
+thr thr-flag-unmarked  1 'NOT READY*b.go' "[$(t false '"b.go"' "$BOT,$BOTFLAG")]"
+thr thr-flag-and-fix   1 'NOT READY*c.py' "[$(t false '"a.sh"' "$MK,$FLAG"),$(t false '"c.py"' "$LISTED")]" ci-reviewer
+thr thr-flag-and-human 0 'READY FOR REVIEW*a.sh*d.md' "[$(t false '"a.sh"' "$MK,$FLAG"),$(t false '"d.md"' "$HU")]"
+thr thr-blocked-human  0 'blocked only on a required review; open thread(s) for a person:*d.md' \
+  "[$(t false '"d.md"' "$HU")]" '' BLOCKED '"REVIEW_REQUIRED"'
+thr thr-malformed      2 'could not parse the review threads' '["oops"]'
+
+# --all reads threads the same way.
+ran=$((ran + 1))
+out=$(PR_WATCH_JSON="$TMP/thr-marked-open.json" sh "$BIN" --all 2>&1); rc=$?
+case "$rc:$out" in
+  1:*"NOT READY"*a.sh*) printf 'ok   %-22s exit 1\n' thr-all ;;
+  *) fails=$((fails + 1)); printf 'FAIL %-22s exit %s: %s\n' thr-all "$rc" "$out" ;;
+esac
+
+# The gh path: threads come from GraphQL, every page, for the PR's own repo.
+mkdir -p "$TMP/ghq"
+cat > "$TMP/ghq/gh" <<GHQ
+#!/bin/sh
+printf '%s\n' "\$*" >> "$TMP/ghq.log"
+case "\$1 \$2" in
+  "pr view") cat "$TMP/ghq-view.json" ;;
+  "api graphql") [ -f "$TMP/ghq-pages.json" ] || exit 1; cat "$TMP/ghq-pages.json" ;;
+  *) exit 2 ;;
+esac
+GHQ
+chmod +x "$TMP/ghq/gh"
+jq -c '. + {url: "https://github.com/owner/repo/pull/42"} | del(.reviewThreads)' "$TMP/clean-approved.json" > "$TMP/ghq-view.json"
+page() { # <hasNextPage> <thread nodes>
+  printf '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":%s,"endCursor":"c"},"nodes":%s}}}}}\n' "$1" "$2"
+}
+ghq() { # <name> <want-exit> <glob>
+  ran=$((ran + 1)); : > "$TMP/ghq.log"
+  out=$(PATH="$TMP/ghq:$PATH" sh "$BIN" 42 2>&1); rc=$?
+  case "$rc:$out" in
+    "$2:"*$3*) printf 'ok   %-22s exit %s\n' "$1" "$rc" ;;
+    *) fails=$((fails + 1)); printf 'FAIL %-22s exit %s, wanted %s and "%s"\n' "$1" "$rc" "$2" "$3"
+       printf '%s\n' "$out" | sed 's/^/       | /' ;;
+  esac
+}
+RESOLVED='[{"isResolved":true,"path":"a.sh","comments":{"nodes":[{"author":{"login":"alice","__typename":"User"},"body":"ok"}]}}]'
+{ page true "$RESOLVED"
+  page false '[{"isResolved":false,"path":"b.go","comments":{"nodes":[{"author":{"login":"reviewer","__typename":"Bot"},"body":"Possible nil dereference."}]}}]'
+} > "$TMP/ghq-pages.json"
+ghq gh-threads-page2-bot 1 'NOT READY*b.go: Possible nil dereference.'
+ran=$((ran + 1))
+if grep -q 'api graphql --paginate -f owner=owner -f name=repo -F number=42' "$TMP/ghq.log"
+then printf 'ok   %-22s owner, name, number from the PR url\n' gh-threads-args
+else fails=$((fails + 1)); printf 'FAIL %-22s log: %s\n' gh-threads-args "$(tr '\n' ';' < "$TMP/ghq.log")"; fi
+
+page false "$RESOLVED" > "$TMP/ghq-pages.json"
+ghq gh-threads-resolved 0 'READY TO MERGE'
+printf '{"data":{"repository":null}}\n' > "$TMP/ghq-pages.json"
+ghq gh-threads-missing 2 'could not read the review threads'
+rm -f "$TMP/ghq-pages.json"
+ghq gh-threads-api-fails 2 'could not read the review threads'
 
 # --- argument handling ------------------------------------------------------
 ran=$((ran + 1))

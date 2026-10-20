@@ -70,8 +70,18 @@
 # THREE FIELDS ARE SILENTLY GREEN WHEN ABSENT, and that is the shape a
 # half-written provider takes: no statusCheckRollup reads as "no checks", no
 # isDraft as false, and no reviewDecision turns READY FOR REVIEW into READY TO
-# MERGE. A view returning only number/title/state/mergeable/mergeStateStatus
-# reports READY TO MERGE, exit 0. Emit all of them, empty rather than absent.
+# MERGE. A view returning only number/title/state/mergeable/mergeStateStatus/
+# reviewThreads reports READY TO MERGE, exit 0. Emit all of them, empty rather
+# than absent.
+#
+# REVIEW THREADS are the exception: without them the verdict is capped at READY
+# FOR REVIEW, "threads not checked". The shape, comments oldest first:
+#   reviewThreads: [{isResolved, path, comments: [{author, isBot, body}]}]
+# A comment is non-human if its body starts with the agent mark, isBot is true,
+# or author is in PR_WATCH_BOTS (comma-separated). An open thread that is all
+# non-human is NOT READY unless its last comment is marked and has a line
+# starting "needs-human:"; any other open thread caps the verdict at READY FOR
+# REVIEW.
 #
 # DERIVING mergeStateStatus. Not every host has one field for it, and BEHIND in
 # particular usually has none -- there is no "the base moved under this branch"
@@ -168,8 +178,27 @@ fetch() {
     return $?
   fi
   # shellcheck disable=SC2086
-  if [ -n "$1" ]; then gh pr view "$1" ${REPO:+--repo "$REPO"} --json "$FIELDS" 2>/dev/null
-  else gh pr view ${REPO:+--repo "$REPO"} --json "$FIELDS" 2>/dev/null; fi
+  if [ -n "$1" ]; then _v=$(gh pr view "$1" ${REPO:+--repo "$REPO"} --json "$FIELDS,url" 2>/dev/null)
+  else _v=$(gh pr view ${REPO:+--repo "$REPO"} --json "$FIELDS,url" 2>/dev/null); fi || return 1
+  with_threads "$_v"
+}
+
+# gh pr view has no review threads; GraphQL does, 100 per page.
+THREADS_Q='query($owner:String!,$name:String!,$number:Int!,$endCursor:String){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100,after:$endCursor){pageInfo{hasNextPage endCursor} nodes{isResolved path comments(first:100){nodes{author{login __typename} body}}}}}}}'
+with_threads() {
+  _o=$(printf '%s' "$1" | jq -r '.url | capture("/(?<o>[^/]+)/(?<r>[^/]+)/pull/(?<n>[0-9]+)$") | "\(.o) \(.r) \(.n)"' 2>/dev/null) || _o=""
+  _t=""
+  if [ -n "$_o" ]; then
+    # shellcheck disable=SC2086
+    set -- "$1" $_o
+    _t=$(gh api graphql --paginate -f owner="$2" -f name="$3" -F number="$4" -f query="$THREADS_Q" 2>/dev/null) || _t=""
+  fi
+  [ -n "$_t" ] && printf '%s' "$_t" | jq -cs --argjson v "$1" '$v + {reviewThreads: [
+      .[].data.repository.pullRequest.reviewThreads.nodes
+      | if type == "array" then .[] else error("no threads") end
+      | {isResolved, path, comments: [.comments.nodes[]
+          | {author: (.author.login // ""), isBot: (.author.__typename == "Bot"), body}]}]}' 2>/dev/null \
+    || { echo "pr-watch: could not read the review threads" >&2; return 1; }
 }
 
 # Poll view until no check is still running, for providers that do not implement
@@ -227,6 +256,43 @@ SUMMARY_JQ='
       ($c | length) ]
   | @tsv'
 
+# One line per open thread, "fix <where>" or "person <where>"; "absent" when
+# the view has no thread list.
+THREADS_JQ='
+  def marked: .body // "" | startswith("🤖");
+  def listed: (.author // "") as $a | $bots | split(",") | map(gsub("^\\s+|\\s+$"; ""))
+    | any(.[]; . != "" and . == $a);
+  def nonhuman: marked or .isBot == true or listed;
+  def flagged: marked and (.body | test("(^|\n)needs-human:"));
+  def firstline: [.body // "" | split("\n")[] | gsub("\r"; "")
+    | select(test("\\S") and (startswith("🤖") | not))][0] // "" | .[0:72];
+  if (.reviewThreads | type) != "array" then "absent"
+  else .reviewThreads[] | select(.isResolved != true) | (.comments // []) as $c
+    | (if ($c | length) > 0 and all($c[]; nonhuman) and ($c[-1] | flagged | not)
+       then "fix" else "person" end)
+      + " " + (if (.path // "") == "" then "conversation" else .path end)
+      + ": " + ($c[0] // {} | firstline)
+  end'
+
+# $1 "TO MERGE" or "FOR REVIEW", $2 the reason. Open threads block or cap it.
+ready() {
+  _fix=$(printf '%s\n' "$threads" | sed -n 's/^fix /    /p')
+  _person=$(printf '%s\n' "$threads" | sed -n 's/^person /    /p')
+  if [ -n "$_fix" ]; then
+    echo "  NOT READY — unresolved bot thread(s); fix, reply with the fixing commit, then resolve:"
+    printf '%s\n' "$_fix"; return 1
+  fi
+  if [ "$threads" = absent ]; then
+    echo "  READY FOR REVIEW — $2; threads not checked"
+  elif [ -n "$_person" ]; then
+    echo "  READY FOR REVIEW — $2; open thread(s) for a person:"
+    printf '%s\n' "$_person"
+  else
+    echo "  READY $1 — $2"
+  fi
+  return 0
+}
+
 # The glyph, asked for once per run. A provider that does not answer `mark`, or
 # answers with something that is not a single character, gets GitHub's "#".
 MARK=""
@@ -246,6 +312,8 @@ verdict() {
   line=$(printf '%s' "$1" | jq -r "$SUMMARY_JQ" 2>/dev/null) || {
     echo "pr-watch: could not parse the pull request JSON"; return 2; }
   [ -n "$line" ] || { echo "pr-watch: empty pull request JSON"; return 2; }
+  threads=$(printf '%s' "$1" | jq -r --arg bots "${PR_WATCH_BOTS:-}" "$THREADS_JQ" 2>/dev/null) || {
+    echo "pr-watch: could not parse the review threads"; return 2; }
 
   # Tab-separated, so a title containing spaces survives the split.
   oldifs=$IFS; IFS='	'
@@ -287,20 +355,20 @@ verdict() {
   case "$msg" in
     CLEAN)
       if [ "$rev" = "APPROVED" ] || [ -z "$rev" ]; then
-        echo "  READY TO MERGE — every gate passed"
+        ready "TO MERGE" "every gate passed"
       else
-        echo "  READY FOR REVIEW — every gate passed; review is $rev"
+        ready "FOR REVIEW" "every gate passed; review is $rev"
       fi
-      return 0 ;;
+      return ;;
     HAS_HOOKS)
-      echo "  READY TO MERGE — green; a pre-receive hook still runs on merge"; return 0 ;;
+      ready "TO MERGE" "green; a pre-receive hook still runs on merge"; return ;;
     BLOCKED)
       # BLOCKED with everything green means the only thing left is a human.
       # That is exactly when asking for review is correct, so it is not a
       # failure -- but say so explicitly rather than reporting a bare "ready".
       if [ "$rev" = "REVIEW_REQUIRED" ] || [ -z "$rev" ]; then
-        echo "  READY FOR REVIEW — checks green and no conflicts; blocked only on a required review"
-        return 0
+        ready "FOR REVIEW" "checks green and no conflicts; blocked only on a required review"
+        return
       fi
       echo "  NOT READY — BLOCKED with review $rev: a required check or ruleset is unmet."
       echo "              Name which one; do not just ask for review"; return 1 ;;
