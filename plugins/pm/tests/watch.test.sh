@@ -29,7 +29,7 @@ ISSUES=$TMP/issues.json
 cat > "$TMP/bin/gh" <<EOF
 #!/bin/sh
 case "\$1 \$2" in
-  "issue list") cat "$ISSUES" ;;
+  "issue list") case "\$*" in *"--repo o/n"*) cat "$ISSUES" ;; *) exit 1 ;; esac ;;
   *) : ;;
 esac
 exit 0
@@ -64,6 +64,10 @@ case "$out" in *"issue#43 NEW"*) ok "a new issue is reported as NEW" ;;
                *) bad "a new issue is reported as NEW" "$out" ;; esac
 case "$out" in *"Brand new"*) ok "and names it, so the turn need not go and look" ;;
                *) bad "and names it" "$out" ;; esac
+# The fake gh lists issues only for --repo o/n, and bin/ is not on PATH.
+case "$out" in *"could not list"*) bad "the queue uses the sibling backlog-queue and --repo" "$out" ;;
+               *"--- queue ---"*"Brand new"*) ok "the queue uses the sibling backlog-queue and --repo" ;;
+               *) bad "the queue uses the sibling backlog-queue and --repo" "$out" ;; esac
 
 # --- activity on a known issue is NOT new ------------------------------------
 # The distinction matters: "new" means triage it, "updated" usually means
@@ -92,7 +96,7 @@ rc=$(watch "$TMP/dead" >/dev/null 2>&1; echo $?)
 cat > "$TMP/bin/gh" <<EOF
 #!/bin/sh
 case "\$1 \$2" in
-  "issue list") cat "$ISSUES" ;;
+  "issue list") case "\$*" in *"--repo o/n"*) cat "$ISSUES" ;; *) exit 1 ;; esac ;;
   *) : ;;
 esac
 exit 0
