@@ -139,6 +139,9 @@ tea pulls unresolve 37
   files (`--description-file`, `< reply.md`); a reply typed as arguments needs `</dev/null`.
 - **Resolve names the thread's first comment.** Gitea marks only the comment given and shows
   a thread as resolved from its first.
+- **A review bot's thread is a bot thread** (step 6 below): reply with the commit that fixes
+  it, then resolve. If the finding contradicts what a person decided, reply saying so and
+  leave it unresolved.
 - **`tea api` is no substitute in scripts**: it exits `0` on an HTTP error, because it never
   reads the status. That is why `pm` and `pr-watch` keep their own `curl` transport.
 
