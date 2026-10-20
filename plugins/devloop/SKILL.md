@@ -120,7 +120,30 @@ instance root; a trailing slash is fine) and `GITEA_TOKEN`. Missing either is ex
 it. Everything runs on `curl` and `jq`, so no extra CLI is required, and the token is sent from
 a mode-600 temp file, never on a command line.
 
-**`gitea-api` is the `gh api` equivalent.** The path is relative to `/api/v1`; a JSON body
+**Use `tea`, Gitea's official CLI (v0.16.0 or later), for pull request work.** It signs in
+through its own `tea login add`; outside a clone of the repository, add `--repo owner/repo`.
+
+```bash
+tea pulls create --base main --head <branch> --title "..." --description-file body.md
+tea pulls 14                      # PR view; tea pulls list --state all lists them
+tea pulls review-comments 14      # inline comments with their ids
+tea pulls reply 14 41 < reply.md  # reply inside the thread holding comment 41
+tea pulls resolve 37              # 37 is the thread's first comment
+tea pulls unresolve 37
+```
+
+- **Answer a thread with `tea pulls reply`.** Posting a new review (`tea pulls review`,
+  `approve`, `reject`) is not a reply: its comments open new threads and the old one stays
+  unanswered.
+- **tea reads stdin whenever it is not a terminal**, as in an agent's shell. Pass bodies as
+  files (`--description-file`, `< reply.md`); a reply typed as arguments needs `</dev/null`.
+- **Resolve names the thread's first comment.** Gitea marks only the comment given and shows
+  a thread as resolved from its first.
+- **`tea api` is no substitute in scripts**: it exits `0` on an HTTP error, because it never
+  reads the status. That is why `pm` and `pr-watch` keep their own `curl` transport.
+
+**`gitea-api` is the fallback** for endpoints tea does not cover, and the `gh api`
+equivalent. The path is relative to `/api/v1`; a JSON body
 comes from `--input FILE` or `--input -` (stdin). Exit `0` on 2xx, `1` on an HTTP error with
 Gitea's message on stderr, `2` when it could not ask. Lists are paged: add `?page=N&limit=50`.
 
@@ -131,11 +154,15 @@ gitea-api repos/{o}/{r}/pulls/{n}/reviews/{id}/comments
 gitea-api repos/{o}/{r}/issues/{n}/timeline              # timeline
 gitea-api repos/{o}/{r}/commits/{sha}/status             # combined status, not check runs
 gitea-api -X POST repos/{o}/{r}/pulls --input pr.json    # open a PR
+gitea-api -X POST repos/{o}/{r}/pulls/{n}/comments/{id}/replies --input reply.json
+gitea-api -X POST repos/{o}/{r}/pulls/comments/{id}/resolve   # or /unresolve; no {n}
 ```
 
-`pr.json` is `{"base": "main", "head": "<branch>", "title": "...", "body": "..."}`. Gitea has
-no draft flag: a title starting `WIP:` or `[WIP]` is a draft, and the API's `draft` field is
-derived from it. Opening one fires the same watcher reminder as `gh pr create`.
+`pr.json` is `{"base": "main", "head": "<branch>", "title": "...", "body": "..."}` and
+`reply.json` is `{"body": "..."}`. Gitea has no draft flag: a title starting `WIP:` or
+`[WIP]` is a draft, and the API's `draft` field is derived from it (`tea pulls create --draft`
+prepends `WIP: `). Opening one either way fires the
+same watcher reminder as `gh pr create`.
 
 ```bash
 PR_WATCH_PROVIDER=pr-watch-gitea pr-watch 14
