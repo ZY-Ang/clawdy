@@ -108,8 +108,8 @@ def comments: [ .[] | { author: { login: (.user.login // "") }, body: (.body // 
 '
 
 # _gitea_label_ids <name>... -- sets PM_GITEA_IDS to a JSON array of the label
-# ids in PM_GITEA_REPO. Ids go as JSON numbers: Gitea reads a quoted id as a
-# label NAME and silently drops it.
+# ids in PM_GITEA_REPO, then its org's. Ids go as JSON numbers: Gitea reads a
+# quoted id as a label NAME and silently drops it.
 _gitea_label_ids() {
   PM_GITEA_IDS='[]'
   [ $# -gt 0 ] || return 0
@@ -117,6 +117,14 @@ _gitea_label_ids() {
   _gitea_list "repos/$PM_GITEA_REPO/labels" 100000 "$_gl" || { rm -f "$_gl"; return 1; }
   _gw=$(printf '%s\n' "$@" | jq -R . | jq -cs .)
   _gids=$(jq -c --argjson w "$_gw" '[ $w[] as $n | ([ .[] | select(.name == $n) | .id ][0] // $n) ]' < "$_gl")
+  if printf '%s' "$_gids" | jq -e 'any(.[]; type == "string")' >/dev/null; then
+    # A user-owned repo answers 404 here.
+    if _gitea_list "orgs/${PM_GITEA_REPO%%/*}/labels" 100000 "$_gl"; then
+      _gids=$(jq -c --argjson g "$_gids" '. as $o | [ $g[] | if type == "string" then (. as $n | [ $o[] | select(.name == $n) | .id ][0] // $n) else . end ]' < "$_gl")
+    else
+      case "$PROVIDER_ERR" in "HTTP 404 "*) ;; *) rm -f "$_gl"; return 1 ;; esac
+    fi
+  fi
   rm -f "$_gl"
   _gmiss=$(printf '%s' "$_gids" | jq -r '[ .[] | strings ] | join(", ")')
   [ -z "$_gmiss" ] || { PROVIDER_ERR="no such label in $PM_GITEA_REPO: $_gmiss"; return 1; }

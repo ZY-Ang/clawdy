@@ -60,6 +60,7 @@ others=$(grep -ln "MARK='🤖'" "$BIN"/* 2>/dev/null || true)
   || bad "a binary redefines the mark" "$others"
 
 # --- the contract is documented where it is implemented ----------------------
+miss=0
 for fn in provider_name provider_pr_ref_mark provider_available \
           provider_issues provider_issue \
           provider_comment provider_label provider_create_issue \
@@ -68,10 +69,10 @@ for fn in provider_name provider_pr_ref_mark provider_available \
           provider_issue_id provider_blocked_by provider_open_draft_pr \
           provider_find_pr provider_pr_activity provider_supports_deps ; do
   for p in provider-github.sh provider-gitea.sh; do
-    grep -q "^$fn()" "$LIB/$p" || bad "$fn is named in the contract but not implemented in $p"
+    grep -q "^$fn()" "$LIB/$p" || { miss=1; bad "$fn is named in the contract but not implemented in $p"; }
   done
 done
-ok "every function the contract names is implemented"
+[ "$miss" -eq 0 ] && ok "every function the contract names is implemented"
 
 
 

@@ -119,9 +119,11 @@ EVENT issue#$n closed or no longer listed — $title"
     printf '%s\n' "$emit" | sed '/^$/d'
     # The waking turn gets the ranked work with the event, so it does not have
     # to go and ask before it can act.
-    if command -v backlog-queue >/dev/null 2>&1; then
+    q=$HERE/backlog-queue
+    [ -x "$q" ] || q=$(command -v backlog-queue 2>/dev/null) || q=""
+    if [ -n "$q" ]; then
       echo "--- queue ---"
-      backlog-queue 2>&1 | head -20 || true
+      "$q" ${REPO:+--repo "$REPO"} 2>&1 | head -20 || true
     fi
     exit 0
   fi
