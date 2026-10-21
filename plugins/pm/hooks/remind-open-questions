@@ -38,22 +38,60 @@ DIR="$QUESTIONS_DIR/${SESSION:-unsessioned}"
 SCOPED=1; [ -n "${SESSION:-}" ] || SCOPED=0
 [ -d "$DIR" ] || exit 0
 
+# The prompt's own session id keys what this session was last shown; the env id
+# can be absent, and a shared `unsessioned` key would hide the list from all but
+# the first agent to see it.
+INPUT=""; [ -t 0 ] || INPUT=$(cat 2>/dev/null || true)
+KEY=$(printf '%s' "$INPUT" | sed -n 's/.*"session_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)
+[ -n "$KEY" ] || KEY=${SESSION:-}
+KEY=$(printf '%s' "$KEY" | tr -cd 'A-Za-z0-9._-')
+SHOWN=""; [ -n "$KEY" ] && SHOWN="$DIR/.reminded.$KEY"
+
 n=0
+ids=""
 out=""
 for f in "$DIR"/*.md; do
   [ -f "$f" ] || continue
   st=$(sed -n 's/^- status: //p' "$f" 2>/dev/null | head -1)
   [ -n "$st" ] || st=open
   [ "$st" = open ] || continue
+  # Tasks are filed, not answered; only questions wait on the human.
+  [ "$(sed -n 's/^- kind: //p' "$f" 2>/dev/null | head -1)" = task ] && continue
   id=$(sed -n 's/^- id: //p' "$f" 2>/dev/null | head -1)
-  title=$(sed -n '1s/^# //p' "$f" 2>/dev/null)
+  title=$(sed -n '1s/^# //p' "$f" 2>/dev/null | sed 's/^\(.\{69\}\)..*$/\1…/')
   [ -n "$id" ] || continue
   n=$((n + 1))
+  ids="$ids$id
+"
   out="$out
   $id  $title"
 done
 
-[ "$n" -eq 0 ] && exit 0
+# Ids shown last time that are no longer open, so a resolved one is named once
+# rather than vanishing.
+gone=""
+if [ -n "$SHOWN" ] && [ -f "$SHOWN" ]; then
+  while IFS= read -r old; do
+    [ -n "$old" ] || continue
+    case "
+$ids" in *"
+$old
+"*) ;; *) gone="$gone $old" ;; esac
+  done < "$SHOWN"
+fi
+
+if [ "$n" -eq 0 ]; then
+  [ -n "$SHOWN" ] && rm -f "$SHOWN"
+  [ -n "$gone" ] && echo "[open questions] None open now; no longer open since the last list:$gone"
+  exit 0
+fi
+
+# Unchanged since the full list was printed: one line, not the list again.
+if [ -n "$SHOWN" ] && [ -f "$SHOWN" ] && [ "$(cat "$SHOWN")" = "$(printf '%s' "$ids")" ]; then
+  echo "[open questions] $n still open, listed earlier (\`questions\` lists them). If this message answers one, record it BEFORE replying: questions answer <id> \"<what the human said>\""
+  exit 0
+fi
+[ -n "$SHOWN" ] && printf '%s' "$ids" > "$SHOWN" 2>/dev/null
 
 # Written as an instruction rather than a status line: a status line is read as
 # background and skipped, and being skipped is the whole problem.
@@ -66,19 +104,18 @@ else
   WHOSE="with no session id — these are shared with every other unscoped agent, so some may not be yours"
 fi
 
+GONE=""; [ -n "$gone" ] && GONE="
+No longer open since the last list:$gone
+"
+
 cat <<MSG
 [open questions] You asked $n question(s) $WHOSE that are still open:
 $out
-
-If the message you are about to answer resolves one of them, record it BEFORE
-replying — not after, and not "noted":
-
+$GONE
+If the message you are about to answer resolves one, record it BEFORE replying
+(not after, not "noted"); the answer is appended to the question's note:
   questions answer <id> "<what the human actually said>"
-
-The answer is appended to the note, so the question and its answer stay one
-artefact. If the message did not answer any of them, ignore this entirely.
-If a question has been overtaken by events:
-
-  questions close <id> --reason superseded
+Overtaken by events: questions close <id> --reason superseded
+Otherwise ignore this. The full list is repeated only when it changes.
 MSG
 exit 0
