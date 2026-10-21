@@ -23,12 +23,17 @@ segs=$(printf '%s' "$cmd" \
   | sed 's/^[[:space:]]*//')
 gated=$(printf '%s\n' "$segs" \
   | grep -cE '^(sudo[[:space:]]+)?gh[[:space:]]+pr[[:space:]]+create([[:space:]]|$)')
+# Optional sudo, env and VAR=value assignments before a command.
+pre='^(sudo[[:space:]]+)?(env[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'"'[^']*'"'|\$\([^)]*\)|[^[:space:]]*)[[:space:]]+)*'
 # Gitea: a gitea-api POST to exactly repos/<o>/<r>/pulls.
 gitea=$(printf '%s\n' "$segs" \
-  | grep -E '^(sudo[[:space:]]+)?(env[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=("[^"]*"|'"'[^']*'"'|\$\([^)]*\)|[^[:space:]]*)[[:space:]]+)*(sh[[:space:]]+)?"?([^[:space:]]*/)?gitea-api"?[[:space:]]' \
+  | grep -E "$pre"'(sh[[:space:]]+)?"?([^[:space:]]*/)?gitea-api"?[[:space:]]' \
   | grep -E '[[:space:]]-X[[:space:]]+[Pp][Oo][Ss][Tt]([[:space:]]|$)' \
   | grep -cE "[[:space:]][\"']?/?repos/[^/[:space:]\"']+/[^/[:space:]\"']+/pulls[\"']?([[:space:]]|$)")
-[ "${gated:-0}" -gt 0 ] || [ "${gitea:-0}" -gt 0 ] || exit 0
+# Gitea: tea pulls create, under any of its aliases.
+tea=$(printf '%s\n' "$segs" \
+  | grep -cE "$pre"'"?([^[:space:]]*/)?tea"?[[:space:]]+(pulls|pull|pr)[[:space:]]+(create|c)([[:space:]]|$)')
+[ "${gated:-0}" -gt 0 ] || [ "${gitea:-0}" -gt 0 ] || [ "${tea:-0}" -gt 0 ] || exit 0
 
 cat <<'JSON'
 {

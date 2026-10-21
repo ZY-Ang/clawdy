@@ -63,6 +63,20 @@ silent "gitea-api POST to issues does not fire" \
 silent "prose naming a gitea-api POST does not fire" \
   'echo run gitea-api -X POST repos/o/r/pulls yourself'
 
+# --- Gitea: tea pulls create and its aliases --------------------------------
+fires  "tea pulls create fires" \
+  'tea pulls create --base main --head b --title t --description-file b.md'
+fires  "tea pr create fires" 'tea pr create --title t'
+fires  "tea pull c fires" 'tea pull c --title t'
+fires  "tea by absolute path, after &&, fires" 'cd /x && /usr/local/bin/tea pulls create --title t'
+fires  "tea behind a variable assignment fires" 'TEA_CONFIG=c tea pulls create --title t'
+silent "tea pulls list does not fire" 'tea pulls list'
+silent "tea pulls reply does not fire" 'tea pulls reply 3 41 done'
+silent "prose naming tea pulls create does not fire" \
+  'echo run tea pulls create yourself'
+silent "tea pulls create inside a heredoc does not fire" \
+  'gh pr edit 1 --body-file - <<EOF\nrun tea pulls create yourself\nEOF'
+
 echo "---"
 if [ "$fails" -eq 0 ]; then echo "$ran passed"; else echo "$fails of $ran failed"; fi
 exit $([ "$fails" -eq 0 ] && echo 0 || echo 1)
