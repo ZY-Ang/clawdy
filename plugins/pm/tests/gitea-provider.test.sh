@@ -23,6 +23,7 @@ trap 'rm -rf "$TMP"' EXIT INT TERM
 command -v jq >/dev/null 2>&1 || { echo "gitea-provider.test: jq required" >&2; exit 1; }
 
 fails=0 ran=0
+unset TEST_GITEA_URL
 ok()  { ran=$((ran+1)); printf 'ok   %s\n' "$1"; }
 bad() { ran=$((ran+1)); fails=$((fails+1)); printf 'FAIL %s\n' "$1"; [ -n "${2:-}" ] && printf '       %s\n' "$2"
         return 0; }
@@ -105,7 +106,7 @@ routes_with() {
 
 # run <fn> <args...> -- the provider sourced fresh, the fake curl first on PATH.
 run() {
-  ( PATH="$TMP/bin:$PATH"; GITEA_URL=${GITEA_URL:-https://gitea.com} GITEA_TOKEN=s3cr3t-token
+  ( PATH="$TMP/bin:$PATH"; GITEA_URL=${TEST_GITEA_URL:-https://gitea.com} GITEA_TOKEN=s3cr3t-token
     FAKE_ROUTES=${FAKE_ROUTES:-$TMP/routes}
     export GITEA_URL GITEA_TOKEN FAKE_ROUTES FAKE_CURL_LOG FAKE_CURL_FAIL PM_ASSUME_DEPS PM_LIMIT
     . "$LIB/provider-gitea.sh"; "$@" )
@@ -156,7 +157,7 @@ case "$w" in *'AUTH header = "Authorization: token s3cr3t-token"'*) ok "it goes 
 case "$w" in *"MODE -rw-------"*) ok "and that config file is mode 600" ;; *) bad "config mode" "$(lines MODE "$w")" ;; esac
 
 # A trailing slash on GITEA_URL must not double up.
-w=$(GITEA_URL=https://gitea.com/ wire provider_issue 3 owner/repo | grep "^REQ")
+w=$(TEST_GITEA_URL=https://gitea.com/ wire provider_issue 3 owner/repo | grep "^REQ")
 [ "$w" = "REQ GET https://gitea.com/api/v1/repos/owner/repo/issues/3" ] \
   && ok "a trailing slash on GITEA_URL is tolerated" || bad "trailing slash" "$w"
 
