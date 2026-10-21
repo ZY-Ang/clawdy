@@ -207,24 +207,33 @@ fi
 # Order matters. The branch and the pull request are what make findings
 # reviewable; the label is bookkeeping. If the label lands and the PR does not,
 # the queue hides an issue that nothing is actually working.
-if git show-ref --verify --quiet "refs/heads/$BRANCH"; then
-  git checkout -q "$BRANCH"
-else
-  git checkout -q -b "$BRANCH" 2>/dev/null || {
-    echo "backlog-claim: could not create branch $BRANCH" >&2; exit 2; }
-fi
-
 # A branch with no commits cannot carry a pull request, so the claim itself is
 # the first commit. It also leaves the binding in git history, where it survives
 # the issue being edited. No closing keyword here: a commit cannot be edited
 # when the issue turns out to span several PRs; the PR body can.
+# Built with commit-tree and pushed by sha, so the caller's checkout is never switched.
 if [ -z "$EXISTING_PR" ]; then
-  git commit -q --allow-empty -m "claim #$NUM: $TITLE" \
-    -m "Claimed at $STAMP." || {
+  git fetch -q origin "+refs/heads/$BASE:refs/remotes/origin/$BASE" 2>/dev/null || {
+    echo "backlog-claim: could not fetch $BASE from origin" >&2; exit 2; }
+  # Parent: the branch on the remote (a re-run), else a local branch of that name, else the base.
+  if git fetch -q origin "+refs/heads/$BRANCH:refs/remotes/origin/$BRANCH" 2>/dev/null; then
+    PARENT=refs/remotes/origin/$BRANCH
+  elif git show-ref --verify --quiet "refs/heads/$BRANCH"; then
+    PARENT=refs/heads/$BRANCH
+  else
+    PARENT=refs/remotes/origin/$BASE
+  fi
+  PARENT_SHA=$(git rev-parse "$PARENT")
+  SHA=$(git commit-tree -p "$PARENT_SHA" -m "claim #$NUM: $TITLE" \
+    -m "Claimed at $STAMP." "$PARENT_SHA^{tree}") || {
     echo "backlog-claim: could not record the claim commit" >&2; exit 2; }
 
-  git push -q -u origin "$BRANCH" 2>/dev/null || {
+  git push -q origin "$SHA:refs/heads/$BRANCH" 2>/dev/null || {
     echo "backlog-claim: could not push $BRANCH" >&2; exit 2; }
+  # A local branch the claim was built on follows it, so its next push fast-forwards.
+  if [ "$(git rev-parse -q --verify "refs/heads/$BRANCH" || true)" = "$PARENT_SHA" ]; then
+    git update-ref "refs/heads/$BRANCH" "$SHA" "$PARENT_SHA"
+  fi
 
   PR_BODY=$(agent_prefix "Claiming #$NUM.
 
