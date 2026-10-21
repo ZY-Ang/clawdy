@@ -34,7 +34,7 @@ q()   { PATH="$TMP/bin:$PATH" sh "$BIN/questions" "$@"; }
 # Tasks still go through file-issue.
 ask() { PATH="$TMP/bin:$PATH" sh "$BIN/ask-async" "$1" \
           --blocked-on access --context "test" --assume "carrying on" >/dev/null 2>&1; }
-task() { PATH="$TMP/bin:$PATH" sh "$BIN/file-issue" task "$1" --body "${2:-b}" >/dev/null 2>&1; }
+task() { PATH="$TMP/bin:$PATH" sh "$BIN/file-issue" task "$1" --priority low --urgency low --size s --body "${2:-b}" >/dev/null 2>&1; }
 idof(){ sed -n 's/^- id: //p' "$(find "$CLAUDE_QUESTIONS_DIR" -name "*$1*.md"|head -1)" 2>/dev/null|head -1; }
 reset(){ rm -rf "$CLAUDE_QUESTIONS_DIR"; }
 
@@ -100,21 +100,66 @@ case "$(q --all 2>&1)" in *fresh-one*) ok "and fall back to the topic slug" ;;
 
 # --- the reminder hook --------------------------------------------------------
 reset
-[ -z "$(sh "$HOOK" 2>&1)" ] && ok "hook is silent with no notes" || bad "hook is silent with no notes"
+[ -z "$(sh "$HOOK" 2>&1 </dev/null)" ] && ok "hook is silent with no notes" || bad "hook is silent with no notes"
 ask "Should deletes keep invoice numbers"
 HID=$(idof should-deletes)
-out=$(sh "$HOOK" 2>&1)
+out=$(sh "$HOOK" 2>&1 </dev/null)
 case "$out" in *"$HID"*) ok "hook names the open question" ;; *) bad "hook names the open question" "$out" ;; esac
 case "$out" in *"questions answer"*) ok "and gives the exact command" ;; *) bad "and gives the exact command" ;; esac
 case "$out" in *BEFORE*) ok "and says record before replying" ;; *) bad "and says record before replying" ;; esac
-sh "$HOOK" >/dev/null 2>&1; rc_is "hook exits 0 — it reminds, never blocks" $? 0
+sh "$HOOK" >/dev/null 2>&1 </dev/null; rc_is "hook exits 0 — it reminds, never blocks" $? 0
+
+# Unchanged list: one line naming the count and the command, not the list again.
+out=$(sh "$HOOK" 2>&1 </dev/null)
+case "$out" in *"$HID"*) bad "an unchanged list is not repeated" "$out" ;;
+  *"1 still open"*"questions answer"*) ok "an unchanged list is not repeated, only a one-line nudge" ;;
+  *) bad "an unchanged list is not repeated, only a one-line nudge" "$out" ;; esac
+[ "$(printf '%s\n' "$out" | wc -l)" -eq 1 ] && ok "and the nudge is one line" || bad "and the nudge is one line" "$out"
+
+# A new question changes the list, so the next prompt shows all of it.
+ask "Which retry library"
+NID=$(idof which-retry)
+out=$(sh "$HOOK" 2>&1 </dev/null)
+case "$out" in *"$HID"*"$NID"*|*"$NID"*"$HID"*) ok "a new question re-shows the full list" ;;
+  *) bad "a new question re-shows the full list" "$out" ;; esac
+
+# Answering one must name it once, not let it vanish.
+q answer "$NID" "the lighter one" >/dev/null 2>&1
+out=$(sh "$HOOK" 2>&1 </dev/null)
+case "$out" in *"No longer open"*"$NID"*) ok "an answered question is named as no longer open" ;;
+  *) bad "an answered question is named as no longer open" "$out" ;; esac
+case "$out" in *"$HID  "*) ok "next to the list still open" ;; *) bad "next to the list still open" "$out" ;; esac
 
 q answer "$HID" "yes" >/dev/null 2>&1
-[ -z "$(sh "$HOOK" 2>&1)" ] && ok "hook goes quiet once answered" || bad "hook goes quiet once answered"
+out=$(sh "$HOOK" 2>&1 </dev/null)
+case "$out" in *"None open now"*"$HID"*) ok "the last one answered is named once" ;;
+  *) bad "the last one answered is named once" "$out" ;; esac
+[ -z "$(sh "$HOOK" 2>&1 </dev/null)" ] && ok "hook goes quiet once answered" || bad "hook goes quiet once answered"
+
+# What was shown is per prompt session: another session sharing the directory
+# must still get the full list.
+reset; ask "Shared one"
+SID=$(idof shared-one)
+printf '{"session_id":"tab-1"}' | sh "$HOOK" >/dev/null 2>&1
+out=$(printf '{"session_id":"tab-2"}' | sh "$HOOK" 2>&1)
+case "$out" in *"$SID  "*) ok "a second session is not silenced by the first one's print" ;;
+  *) bad "a second session is not silenced by the first one's print" "$out" ;; esac
+
+# Tasks are filed, not answered, so they are not listed as questions.
+reset; task "Tidy the logs"
+[ -z "$(sh "$HOOK" 2>&1 </dev/null)" ] && ok "an open task is not reminded as a question" \
+  || bad "an open task is not reminded as a question" "$(sh "$HOOK" 2>&1 </dev/null)"
+
+# Titles are cut so one long question cannot dominate the list.
+reset; ask "Should the nightly job alert on a skipped run as well as a failed one, given that a skip looks identical to success today"
+out=$(sh "$HOOK" 2>&1 </dev/null)
+case "$out" in *"identical to success"*) bad "long titles are truncated" "$out" ;;
+  *"Should the nightly job"*…*) ok "long titles are truncated" ;;
+  *) bad "long titles are truncated" "$out" ;; esac
 
 # Another session's open question is not this human's to answer right now.
 reset; ask "Mine"
-out=$(CLAUDE_CODE_SESSION_ID=sess-bbbb sh "$HOOK" 2>&1)
+out=$(CLAUDE_CODE_SESSION_ID=sess-bbbb sh "$HOOK" 2>&1 </dev/null)
 [ -z "$out" ] && ok "hook ignores other sessions' questions" || bad "hook ignores other sessions' questions" "$out"
 
 echo "---"
