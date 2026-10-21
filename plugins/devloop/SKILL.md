@@ -29,9 +29,11 @@ It exits `0` when nothing is left on your side, `1` with the reason and the fix,
 it could not tell — so a loop can branch on it and an unreachable API is never mistaken for a
 pass. Exit `0` prints which of two situations you are in:
 
-- **READY TO MERGE** — every gate passed and no review is outstanding.
+- **READY TO MERGE** — every gate passed, no review is outstanding and no review thread is
+  open.
 - **READY FOR REVIEW** — everything you control is green; the only thing left is a human.
-  This is the one moment asking for review is correct.
+  This is the one moment asking for review is correct. Open threads that need a person are
+  listed under it.
 
 ### Which repository
 
@@ -89,8 +91,12 @@ gets EOF, not a prompt.
 **Three fields are silently green when absent**, and that is the shape a half-written
 provider takes: no `statusCheckRollup` reads as "no checks", no `isDraft` as `false`, and no
 `reviewDecision` turns READY FOR REVIEW into READY TO MERGE. A `view` returning only
-`number`/`title`/`state`/`mergeable`/`mergeStateStatus` reports READY TO MERGE, exit `0`.
-Emit all of them, empty rather than absent.
+`number`/`title`/`state`/`mergeable`/`mergeStateStatus`/`reviewThreads` reports READY TO MERGE,
+exit `0`. Emit all of them, empty rather than absent.
+
+**`reviewThreads` is the exception:** without it the verdict is capped at READY FOR REVIEW,
+"threads not checked". Each thread is `{isResolved, path, comments: [{author, isBot, body}]}`,
+comments oldest first.
 
 The JSON shape is the `FIELDS` list in `bin/pr-watch`. Two things to get right:
 
@@ -168,7 +174,17 @@ Every one of these must hold before the words "ready for review" appear:
 | `mergeable` | `MERGEABLE` | `CONFLICTING` needs a merge; `UNKNOWN` means GitHub has not finished — re-poll, do not assume |
 | `mergeStateStatus` | `CLEAN` | see below |
 | `statusCheckRollup` | every check `COMPLETED` **and** `SUCCESS` | a `PENDING` check is not a pass; the array mixes `CheckRun` (`status`/`conclusion`) with `StatusContext` (`state`, no `status`) — read both or a commit status looks pending forever |
-| review threads | none unresolved | `gh api repos/{o}/{r}/pulls/{n}/comments` |
+| review threads | none unresolved | `reviewThreads` from `gh api graphql`; see below |
+
+**Review threads.** A comment is non-human when it carries the agent mark, its author is a
+bot account, or its login is in `PR_WATCH_BOTS` (comma-separated); a thread is non-human when
+all its comments are.
+
+| Unresolved threads | Verdict |
+| --- | --- |
+| none | READY TO MERGE, other gates permitting |
+| a non-human thread not flagged for a person (step 6) | NOT READY: fix it, reply with the fixing commit, resolve |
+| only flagged non-human and human-involved threads | READY FOR REVIEW, listing each; never READY TO MERGE |
 
 `mergeStateStatus` is the one worth learning, because each value has a different fix:
 
@@ -250,7 +266,9 @@ The steps are the contract; the tool names are local to this repository.
 6. For each open discussion: **bot threads** — every comment in the thread carries the agent
    mark — fix it or justify why it is a non-issue, then resolve; if the finding contradicts
    an operator instruction or a documented project decision, do not silently comply — reply
-   explaining the conflict, leave it unresolved, flag it. **Human-involved threads** — any
+   explaining the conflict, leave it unresolved, flag it: a line starting `needs-human:`
+   with the decision needed. `pr-watch` counts the flag only in the thread's last comment,
+   and only when that comment carries the mark. **Human-involved threads** — any
    thread a person has written in — fix it and reply describing the change, but do not
    resolve; only a human closes a discussion a human is part of.
 7. After addressing discussions — whether by pushing code or replying in-thread — go back to

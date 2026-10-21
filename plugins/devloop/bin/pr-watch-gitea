@@ -73,19 +73,25 @@ view() {
   n=$(printf '%s' "$pr" | jq -r '.number') || die "unreadable pull request JSON"
 
   # Statuses and reviews only matter while open; a closed PR's head may be gone.
-  st='[]' rv='[]' bp='{}'
+  st='[]' rv='[]' bp='{}' th='[]'
   if [ "$(printf '%s' "$pr" | jq -r '.state == "open" and (.merged | not)')" = true ]; then
     sha=$(printf '%s' "$pr" | jq -r '.head.sha')
     st=$(pages "repos/$R/commits/$sha/status" '.statuses // []') || exit 2
     st=$(printf '%s' "$st" | jq -cs 'add // []')
     rv=$(pages "repos/$R/pulls/$n/reviews" '.') || exit 2
     rv=$(printf '%s' "$rv" | jq -cs 'add // []')
+    # Inline comments hang off each review; a pending review is an unsent draft.
+    for id in $(printf '%s' "$rv" | jq -r '.[] | select(.state != "PENDING" and (.comments_count // 1) > 0) | .id'); do
+      c=$("$API" "repos/$R/pulls/$n/reviews/$id/comments" </dev/null) || exit 2
+      th=$(printf '%s' "$c" | jq -c --argjson th "$th" 'if type == "array" then $th + . else error("not a list") end') \
+        || die "unexpected response from review $id comments"
+    done
     # The base branch carries its protection: required approvals and checks.
     base=$(printf '%s' "$pr" | jq -r '.base.ref')
     bp=$("$API" "repos/$R/branches/$base" </dev/null) || exit 2
   fi
 
-  printf '%s' "$pr" | jq -c --argjson st "$st" --argjson rv "$rv" --argjson bp "$bp" '
+  printf '%s' "$pr" | jq -c --argjson st "$st" --argjson rv "$rv" --argjson bp "$bp" --argjson th "$th" '
     # Gitea fails a required-status merge on warning; unknown states fail closed.
     def state: {pending: "PENDING", success: "SUCCESS", skipped: "SUCCESS",
                 failure: "FAILURE", error: "ERROR", warning: "FAILURE"}[.] // "ERROR";
@@ -128,7 +134,14 @@ view() {
             elif ([$latest[] | select(.state == "APPROVED" and .official == true)] | length) >= $need
             then "APPROVED"
             else "REVIEW_REQUIRED" end),
-        statusCheckRollup: $checks
+        statusCheckRollup: $checks,
+        # Gitea keys a conversation by path and signed line (negative: old side)
+        # across all reviews, and resolves it through its first comment.
+        reviewThreads: (
+          $th | group_by([.path, (if (.position // 0) > 0 then .position
+                                  else -(.original_position // 0) end)])
+          | map(sort_by(.id) | {isResolved: (.[0].resolver != null), path: .[0].path,
+                comments: map({author: (.user.login // ""), isBot: (.user.type == "Bot"), body})}))
       }' || die "unreadable pull request JSON"
 }
 

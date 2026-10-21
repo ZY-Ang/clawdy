@@ -51,9 +51,9 @@ status() { # <state> <context> -> one CommitStatus
 combined() { # <statuses json array>
   printf '{"state":"pending","sha":"%s","total_count":0,"statuses":%s,"commit_url":"","url":""}' "$HEAD_SHA" "$1"
 }
-review() { # <id> <user id> <state> <dismissed> [official]
-  printf '{"id":%s,"user":{"id":%s,"login":"u%s"},"state":"%s","dismissed":%s,"stale":false,"official":%s,"commit_id":"%s"}' \
-    "$1" "$2" "$2" "$3" "$4" "${5:-true}" "$HEAD_SHA"
+review() { # <id> <user id> <state> <dismissed> [official] [comments_count]
+  printf '{"id":%s,"user":{"id":%s,"login":"u%s"},"state":"%s","dismissed":%s,"stale":false,"official":%s,"comments_count":%s,"commit_id":"%s"}' \
+    "$1" "$2" "$2" "$3" "$4" "${5:-true}" "${6:-0}" "$HEAD_SHA"
 }
 branch() { # <required approvals> <enable status check> <contexts json array> -> Branch
   printf '{"name":"main","protected":true,"required_approvals":%s,"enable_status_check":%s,"status_check_contexts":%s,"user_can_push":false,"user_can_merge":false}' \
@@ -161,6 +161,68 @@ expect "required contexts are ignored while status checks are off" 0 "READY TO M
 setup "$(printf '%s' "$OPEN_OK" | jq -c 'del(.draft) | .title = "[wip] thing" | .mergeable = false')" "$GREEN" '[]'; pw 14
 expect "no draft field (older Gitea): a WIP title is still a draft" 1 "still a draft"
 
+# --- review threads ---------------------------------------------------------
+cmt() { # <id> <login> <body> <path> <position> <original_position> <resolver> [user type] [review id]
+  printf '{"id":%s,"body":"%s","user":{"id":%s,"login":"%s","type":"%s"},"resolver":%s,"pull_request_review_id":%s,"path":"%s","position":%s,"original_position":%s}' \
+    "$1" "$3" "$1" "$2" "${8:-User}" "$7" "${9:-1}" "$4" "$5" "$6"
+}
+RESOLVER='{"id":9,"login":"u9"}'
+AG1=$(cmt 10 agent '🤖\n\nNo backoff.' a.sh 5 0 null)
+AG2=$(cmt 11 agent '🤖\n\nFixed in abc1234.' a.sh 5 0 null)
+REV1="[$(review 1 9 APPROVED false true 2)]"
+REV12="[$(review 1 9 APPROVED false true 1),$(review 2 8 COMMENT false false 1)]"
+
+setup "$OPEN_OK" "$GREEN" "$REV1"; route GET "$A/pulls/14/reviews/1/comments" 200 "[$AG1,$AG2]"; pw 14
+expect "an open agent thread is NOT READY, naming it" 1 "a.sh: No backoff."
+
+setup "$OPEN_OK" "$GREEN" "$REV1"
+route GET "$A/pulls/14/reviews/1/comments" 200 "[$(cmt 10 agent '🤖\n\nNo backoff.' a.sh 5 0 "$RESOLVER"),$AG2]"; pw 14
+expect "a thread is resolved through its first comment" 0 "READY TO MERGE"
+
+setup "$OPEN_OK" "$GREEN" "$REV1"
+route GET "$A/pulls/14/reviews/1/comments" 200 "[$(cmt 11 agent '🤖\n\nFixed.' a.sh 5 0 "$RESOLVER"),$AG1]"; pw 14
+expect "a resolver on a later reply does not resolve the thread" 1 "a.sh: No backoff."
+
+setup "$OPEN_OK" "$GREEN" "$REV1"
+route GET "$A/pulls/14/reviews/1/comments" 200 "[$(cmt 12 alice 'Why?' a.sh 9 0 null),$AG1]"; pw 14
+expect "another line of the same file is another thread" 1 "a.sh: No backoff."
+
+setup "$OPEN_OK" "$GREEN" "$REV1"
+route GET "$A/pulls/14/reviews/1/comments" 200 "[$(cmt 12 alice 'Why?' b.sh 5 0 null),$AG1]"; pw 14
+expect "the same line of another file is another thread" 1 "a.sh: No backoff."
+
+setup "$OPEN_OK" "$GREEN" "$REV1"
+route GET "$A/pulls/14/reviews/1/comments" 200 "[$(cmt 12 alice 'Why?' a.sh 0 5 null),$AG1]"; pw 14
+expect "the old side of a line is another thread" 1 "a.sh: No backoff."
+
+setup "$OPEN_OK" "$GREEN" "$REV12"
+route GET "$A/pulls/14/reviews/1/comments" 200 "[$AG1]"
+route GET "$A/pulls/14/reviews/2/comments" 200 "[$(cmt 12 alice 'Why?' a.sh 5 0 null User 2)]"; pw 14
+expect "one line across two reviews is one thread, human-involved" 0 "open thread(s) for a person"
+
+setup "$OPEN_OK" "$GREEN" "$REV1"
+route GET "$A/pulls/14/reviews/1/comments" 200 "[$(cmt 12 lint 'Unused.' b.go 3 0 null Bot)]"; pw 14
+expect "a Bot account's thread is non-human" 1 "b.go: Unused."
+
+setup "$OPEN_OK" "$GREEN" "[$(review 1 9 APPROVED false),$(review 2 9 PENDING false false 1)]"; pw 14
+expect "a pending review's comments are not read" 0 "READY TO MERGE"
+
+setup "$OPEN_OK" "$GREEN" "$(printf '%s' "$REV1" | jq -c 'map(del(.comments_count))')"
+route GET "$A/pulls/14/reviews/1/comments" 200 "[$AG1]"; pw 14
+expect "a review without comments_count is still read" 1 "a.sh: No backoff."
+
+setup "$OPEN_OK" "$GREEN" "$REV1"; route GET "$A/pulls/14/reviews/1/comments" 500 '{"message":"internal error"}'; pw 14
+expect "HTTP 500 on review comments: could not tell" 2 "internal error"
+
+setup "$OPEN_OK" "$GREEN" "$REV1"; route GET "$A/pulls/14/reviews/1/comments" 200 '{"message":"x"}'; pw 14
+expect "review comments that are not a list: could not tell" 2 "unexpected response from review 1 comments"
+
+setup "$OPEN_OK" "$GREEN" "$REV1"; route GET "$A/pulls/14/reviews/1/comments" 200 "[$AG1]"; prov view 14
+if printf '%s' "$out" | jq -e '.reviewThreads == [{"isResolved":false,"path":"a.sh",
+     "comments":[{"author":"agent","isBot":false,"body":"🤖\n\nNo backoff."}]}]' >/dev/null
+then ok "view emits reviewThreads in the pr-watch shape"
+else bad "view emits reviewThreads in the pr-watch shape" "$out"; fi
+
 # --- a failed fetch is could-not-tell, never a green gate ------------------
 for broken in "commits/$HEAD_SHA/status?page=1&limit=50" "pulls/14/reviews?page=1&limit=50" "branches/main"; do
   setup "$OPEN_OK" "$GREEN" "$APPROVED"
@@ -213,7 +275,7 @@ expect "a change request on page 2 is read" 1 "changes requested"
 # --- the provider's own output ---------------------------------------------
 setup "$OPEN_OK" "[$(status success build),$(status warning lint)]" '[]'; prov view 14
 if [ "$rc" -eq 0 ] && printf '%s' "$out" | jq -e '
-     (keys | sort) == (["isDraft","mergeStateStatus","mergeable","number","reviewDecision","state","statusCheckRollup","title"])' >/dev/null
+     (keys | sort) == (["isDraft","mergeStateStatus","mergeable","number","reviewDecision","reviewThreads","state","statusCheckRollup","title"])' >/dev/null
 then ok "view emits every pr-watch field, none absent"
 else bad "view emits every pr-watch field, none absent" "rc=$rc $out"; fi
 if printf '%s' "$out" | jq -e '(.number | type) == "number" and (.isDraft | type) == "boolean"' >/dev/null
