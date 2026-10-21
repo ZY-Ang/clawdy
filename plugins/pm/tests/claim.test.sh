@@ -105,13 +105,13 @@ if [ -n "$lc_line" ] && [ "$lc_line" -lt "$lbl_line" ]; then
   ok "and creates it before adding it"
 else bad "creates the label before the add" "create=$lc_line add=$lbl_line"; fi
 
-if ( cd "$TMP/wt" && git rev-parse --verify --quiet claude/fix-the-parser-twice >/dev/null ); then
-  ok "the branch really exists"
-else bad "branch exists"; fi
+if ( cd "$TMP/wt" && git rev-parse --verify --quiet refs/remotes/origin/claude/fix-the-parser-twice >/dev/null ); then
+  ok "the checkout can see the branch as origin/<branch>"
+else bad "the checkout can see the branch as origin/<branch>"; fi
 if ( cd "$TMP/up" && git rev-parse --verify --quiet claude/fix-the-parser-twice >/dev/null ); then
   ok "and was pushed to the remote"
 else bad "branch pushed"; fi
-if ( cd "$TMP/wt" && git log -1 --format=%s claude/fix-the-parser-twice | grep -q 'claim #42' ); then
+if ( cd "$TMP/up" && git log -1 --format=%s claude/fix-the-parser-twice | grep -q 'claim #42' ); then
   ok "the claim is recorded in git history too"
 else bad "claim commit"; fi
 if grep -q 'issue comment 42' "$CALLS"; then ok "and commented on the issue"
@@ -119,12 +119,67 @@ else bad "comment posted" "$(cat "$CALLS")"; fi
 
 # A commit cannot be edited when the issue spans several PRs, so it never
 # closes the issue; the PR body, which can be edited, does.
-msg=$( cd "$TMP/wt" && git log -1 --format=%B claude/fix-the-parser-twice )
+msg=$( cd "$TMP/up" && git log -1 --format=%B claude/fix-the-parser-twice )
 if printf '%s' "$msg" | grep -Eiq '(close|fix|resolve)[sd]? #42'; then
   bad "the claim commit carries no closing keyword" "$msg"
 else ok "the claim commit carries no closing keyword"; fi
 if grep -q 'Closes #42' "$CALLS.body" 2>/dev/null; then ok "the draft PR body closes the issue"
 else bad "the draft PR body closes the issue" "$(cat "$CALLS.body" 2>/dev/null)"; fi
+
+# --- the branch starts at the remote base; the caller's checkout is untouched ---
+# Branching from HEAD stacked back-to-back claims on each other's branches.
+mkrepo; issue "$OPEN"
+( cd "$TMP/wt" && git checkout -q -b other && git commit -q --allow-empty -m "other work"
+  echo dirty > notes.txt ) 2>/dev/null
+# The remote base moves on after this checkout last fetched.
+rm -rf "$TMP/elsewhere"; git clone -q -b main "$TMP/up" "$TMP/elsewhere" 2>/dev/null
+( cd "$TMP/elsewhere" && git config user.email t@t && git config user.name t \
+  && git commit -q --allow-empty -m "base moved" && git push -q origin main ) 2>/dev/null
+here() { ( cd "$TMP/wt" && git symbolic-ref HEAD && git rev-parse HEAD && git status --porcelain ) 2>&1; }
+before=$(here)
+out=$(claim 42 --base main)
+parent=$( cd "$TMP/up" && git rev-parse claude/fix-the-parser-twice^ 2>&1 )
+base=$( cd "$TMP/up" && git rev-parse main )
+[ "$parent" = "$base" ] && ok "claimed from another branch, the claim's parent is the remote base" \
+  || bad "claimed from another branch, the claim's parent is the remote base" "parent=$parent base=$base $out"
+after=$(here)
+[ "$before" = "$after" ] && ok "and the caller's branch, HEAD and working tree are unchanged" \
+  || bad "and the caller's branch, HEAD and working tree are unchanged" "before=[$before] after=[$after]"
+
+# A claim whose PR create failed is re-run: the branch on the remote is reused.
+mkrepo; issue "$OPEN"
+export GH_PR_CREATE_FAIL=1; claim 42 >/dev/null; unset GH_PR_CREATE_FAIL
+( cd "$TMP/wt" && git checkout -q --detach origin/claude/fix-the-parser-twice \
+  && git commit -q --allow-empty -m "pushed work" \
+  && git push -q origin HEAD:refs/heads/claude/fix-the-parser-twice && git checkout -q main ) 2>/dev/null
+tip=$( cd "$TMP/up" && git rev-parse claude/fix-the-parser-twice )
+out=$(claim 42); r=$?
+case "$r $out" in "0 "*"claimed #42"*) ok "a re-run after a failed PR create completes the claim" ;;
+  *) bad "a re-run after a failed PR create completes the claim" "rc=$r $out" ;; esac
+parent=$( cd "$TMP/up" && git rev-parse claude/fix-the-parser-twice^ 2>&1 )
+[ "$parent" = "$tip" ] && ok "and builds on the branch already on the remote" \
+  || bad "and builds on the branch already on the remote" "parent=$parent tip=$tip"
+
+# Work already on a local branch of that name is kept under the claim commit.
+mkrepo; issue "$OPEN"
+( cd "$TMP/wt" && git checkout -q -b claude/fix-the-parser-twice && git commit -q --allow-empty -m "early work" \
+  && git checkout -q main ) 2>/dev/null
+work=$( cd "$TMP/wt" && git rev-parse claude/fix-the-parser-twice )
+claim 42 >/dev/null
+parent=$( cd "$TMP/up" && git rev-parse claude/fix-the-parser-twice^ 2>&1 )
+[ "$parent" = "$work" ] && ok "an existing local branch is the claim's parent" \
+  || bad "an existing local branch is the claim's parent" "parent=$parent work=$work"
+[ "$( cd "$TMP/wt" && git rev-parse claude/fix-the-parser-twice )" = "$( cd "$TMP/up" && git rev-parse claude/fix-the-parser-twice )" ] \
+  && ok "and that local branch moves to the pushed claim" || bad "and that local branch moves to the pushed claim"
+
+# Attaching an issue to a branch that already has a PR writes nothing to git.
+mkrepo; issue "$OPEN"
+export GH_PR_EXISTS=1; out=$(claim 42); unset GH_PR_EXISTS
+case "$out" in *"claimed #42"*"#7"*) ok "an issue attaches to a branch's existing PR" ;;
+  *) bad "an issue attaches to a branch's existing PR" "$out" ;; esac
+if grep -q 'pr create' "$CALLS" || ( cd "$TMP/up" && git rev-parse --verify --quiet claude/fix-the-parser-twice >/dev/null ); then
+  bad "and opens no PR and pushes nothing" "$(cat "$CALLS")"
+else ok "and opens no PR and pushes nothing"; fi
 
 # --- idempotence: the whole point ---------------------------------------------
 mkrepo; issue '{"number":42,"title":"Fix the parser, twice","state":"OPEN","labels":[{"name":"claimed"}]}'
