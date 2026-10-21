@@ -281,6 +281,9 @@ context before it composes a reply:
   question or changed the subject, so a hook that refused to end the turn would stop the wrong
   turns and get switched off.
 - **Silent when nothing is open**, so it costs nothing in the common case.
+- **The full list only when it changes.** Otherwise one line with the count and the command.
+  A question answered or closed is named once as no longer open; a new one is listed on the
+  next prompt. Titles are cut to one line, and filed tasks are not listed.
 - **Only this session's questions.** Another agent's open question is not what this human is
   answering right now.
 - **Plain stdout, not JSON.** `additionalContext` in a JSON payload is reported broken in the
