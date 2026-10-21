@@ -95,7 +95,9 @@ backlog-claim 42
 
 Three things happen together, and the middle one is the reason this exists:
 
-1. a branch, named from the issue title unless you pass `--branch`
+1. a branch, named from the issue title unless you pass `--branch`, started at the base on
+   the remote and pushed there; your checkout is not switched, so work it from a worktree of
+   `origin/<branch>`
 2. **a draft pull request, opened immediately** — not when the work is finished
 3. the `claimed` label, so the queue skips it
 
